@@ -34,7 +34,11 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[test]"
+          # server extras 必须装：selfcheck 与部分测试现在 import 上牌入口
+          # （`fd_quant.server`），而 fastmcp 属传输层 extras。只装 [test] 会在
+          # 测试期 ModuleNotFoundError —— 这正是"意图与事实分叉"被修好后暴露的
+          # 真实依赖，不是测试写错了。
+          pip install -e ".[test,server]"
 
       - name: Test suite
         run: python -m pytest tests/ -q
