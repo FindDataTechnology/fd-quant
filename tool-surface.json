@@ -1,0 +1,124 @@
+{
+  "schema": "mcp-tool-surface/v1",
+  "server": "fd-quant",
+  "entry_path": "/fd-quant-compute",
+  "product_line": "wire",
+  "hosting": [
+    "shared-instance"
+  ],
+  "description": "fd-quant 量化能力面，**两组**共 50 工具：① 确定性计算面七族（技术指标 / 组合统计 / 基本面比率 / 估值算子 / regime 检测 / 因子统计 / 口径校验）——**只对传入的序列与参数作答，不取数、不读库、不联网、不调 LLM**：每个工具要求 as_of（ISO 日期）并在输入序列上执行，含 as_of 之后的数据点会被拒绝并点名该日期（不静默截断）；返回统一带 evidence 六字段与输入起止口径；同输入重跑逐位一致（固定归约顺序，不含非确定并行归约）。② 决策账本四工具（落账 / 结算 / 点内检索 / 聚合）——**有状态**：把决策追加式落到本地 SQLite（db_path 参数或 FD_QUANT_LEDGER_DB），同样不取数、不联网（价格与基准序列由调用方传入，持有期按交易日计），无任何推送 / 广播接口。",
+  "skills_eligible_for_packs": [],
+  "tool_groups": [
+    {
+      "group": "decision_ledger",
+      "level": "commercial",
+      "tools": [
+        "record_decision",
+        "retrieve_decisions",
+        "settle_decision",
+        "summarize_pack_performance"
+      ],
+      "description": "决策账本（本组**有状态**：本地 SQLite 单文件，路径由 db_path 参数或 FD_QUANT_LEDGER_DB 指定）：追加式决策记录（幂等键 as_of+symbol+pack+skill，重复提交被拒并返回既有 decision_id；修订产生新行并以 revises 指回）、到期结算（原始收益 + 相对基准 alpha；基准按后缀映射 .SS→000001.SS / .SZ→399001.SZ / .HK→^HSI / .T→^N225 / 无后缀→SPY，可显式覆盖）、反思随结算存储但**绝不推送**、点内检索（只回结算日 ≤ as_of，同标的最多 5 条 + 跨标的教训最多 3 条）、按 pack 聚合（样本数 / 平均 alpha / 胜率 / 原始收益均值，空组显式返回 0）。与计算面同一纪律：不取数、不联网——价格与基准序列由调用方传入，持有期按交易日计。"
+    },
+    {
+      "group": "factor_statistics",
+      "level": "commercial",
+      "tools": [
+        "compute_factor_exposure",
+        "compute_grouped_returns",
+        "compute_information_coefficient",
+        "rank_factor_scores"
+      ],
+      "description": "因子统计原子：IC（Pearson 与 Spearman）、按因子分组的等权组合收益、单因子暴露回归（系数 / t 值 / R²）。不内置任何因子定义或因子库，因子与收益均由调用方传入。"
+    },
+    {
+      "group": "fundamental_ratios",
+      "level": "commercial",
+      "tools": [
+        "compute_cash_flow_quality",
+        "compute_dupont",
+        "compute_efficiency",
+        "compute_growth",
+        "compute_interest_coverage",
+        "compute_leverage_and_liquidity",
+        "compute_profitability",
+        "detect_red_flags"
+      ],
+      "description": "基本面比率与红旗检测：盈利 / 成长 / 偿债 / 效率 / 现金流五类 + DuPont 三因子分解 + 规则化红旗（阈值可配）。输入为快照映射（三表科目）。"
+    },
+    {
+      "group": "portfolio_statistics",
+      "level": "commercial",
+      "tools": [
+        "summarize_beta",
+        "summarize_calmar",
+        "summarize_concentration",
+        "summarize_drawdown",
+        "summarize_information_ratio",
+        "summarize_return",
+        "summarize_sharpe",
+        "summarize_sortino",
+        "summarize_turnover",
+        "summarize_volatility"
+      ],
+      "description": "组合统计：年化收益与波动、回撤（含起止日期）、风险调整收益（Sharpe/Sortino/Calmar）、相对基准度量（IR/TE/Beta）、集中度与换手。无风险利率为显式输入，不内置隐藏假设。"
+    },
+    {
+      "group": "regime_detection",
+      "level": "commercial",
+      "tools": [
+        "detect_regime_slow",
+        "detect_shock_fast",
+        "document_regime_defaults"
+      ],
+      "description": "regime 双速检测：慢速（趋势 + 回撤 + 波动率 Z）输出 risk_on/neutral/risk_off 与逐判据证据；快速（N 日冲击 + 波动率跳变）输出是否触发与降仓建议证据。波动率序列由调用方提供，本层不取数。"
+    },
+    {
+      "group": "technical_indicators",
+      "level": "commercial",
+      "tools": [
+        "compute_atr",
+        "compute_bollinger",
+        "compute_cci",
+        "compute_dmi",
+        "compute_ema",
+        "compute_kdj",
+        "compute_macd",
+        "compute_obv",
+        "compute_rsi",
+        "compute_sma"
+      ],
+      "description": "自实现技术指标（不依赖 ta-lib）：均线族 / 摆动族 / 波动族 / 量价族。warmup 以 null 表示，每指标回带 params 与 warmup。"
+    },
+    {
+      "group": "validation",
+      "level": "commercial",
+      "tools": [
+        "check_observation_sufficiency",
+        "check_series_as_of_bounds",
+        "split_holdout",
+        "split_walk_forward_windows",
+        "validate_no_lookahead"
+      ],
+      "description": "口径与反偷看护栏：walk-forward 窗口切分（测试窗严格晚于其训练窗）、无未来函数检查器（越界报错并点名首个越界点）、序列口径体检（缺失率与 warmup）。"
+    },
+    {
+      "group": "valuation_operators",
+      "level": "commercial",
+      "tools": [
+        "build_valuation_synthesis",
+        "compute_comparable_multiples",
+        "compute_sensitivity_grid",
+        "estimate_dcf",
+        "estimate_ddm",
+        "estimate_monte_carlo"
+      ],
+      "description": "估值算子：DCF（WACC 分步、两种终值法）、DDM、可比倍数（winsurize 去极值）、Monte Carlo（百分位带、种子可传以复现）、双变量敏感性网格、多方法合成（分歧超阈值则扣值不扣结论）。"
+    }
+  ],
+  "registry": {
+    "entry_path": "/fd-quant-compute",
+    "expected_tool_count": 50,
+    "consumption_note": "计算面：纯计算、无状态、无凭据——同一输入恒得同一输出，故无需逐用户隔离，共享实例即可服务全部调用者。数据由调用方从各自通道取来后传入——本服务不做任何取数，因此不参与「价格只走本地通道」等数据路径约束。账本面（decision_ledger 组）：**有状态**——记录写本地单文件 SQLite，路径由 db_path 参数或 FD_QUANT_LEDGER_DB 指定（默认工作目录 fd_quant_ledger.db）。它同样不取数、不联网、无凭据，且无任何推送/广播接口；「多实例共享同一账本」不在本层支持（属部署形态问题，单机本地库是 v1 的边界）。"
+  }
+}

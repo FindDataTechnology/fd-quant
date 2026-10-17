@@ -1,0 +1,15 @@
+{
+  "__expect_path__": "universe",
+  "schema_version": "1",
+  "as_of": "2026-10-16",
+  "universe": [],
+  "weights": {},
+  "cash_floor": 0.0,
+  "constraints": {},
+  "evidence": [],
+  "producer": {
+    "pack": "p",
+    "skill": "s"
+  },
+  "__parity__": "shape"
+}

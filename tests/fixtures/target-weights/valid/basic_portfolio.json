@@ -1,0 +1,12 @@
+{
+  "schema_version": "1",
+  "as_of": "2026-10-16",
+  "universe": ["600519.SS", "000001.SZ", "300750.SZ"],
+  "weights": {"600519.SS": 0.4, "000001.SZ": 0.3, "300750.SZ": 0.1},
+  "cash_floor": 0.2,
+  "constraints": {"max_weight_per_symbol": 0.4, "max_weight_per_sector": 0.5},
+  "evidence": [
+    {"evidence_id": "ev-mom", "label": "20日动量排名", "value": 3, "unit": "rank", "as_of": "2026-10-16", "source": "fd-quant:factor_exposure"}
+  ],
+  "producer": {"pack": "pack-adaptive-rotation", "skill": "rotation-portfolio", "run_id": "run-002"}
+}

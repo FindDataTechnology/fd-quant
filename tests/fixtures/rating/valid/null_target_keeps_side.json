@@ -1,0 +1,15 @@
+{
+  "schema_version": "1",
+  "as_of": "2026-10-16",
+  "subject": "000001.SZ",
+  "side": "hold",
+  "conviction": 0.45,
+  "price_target": null,
+  "target_evidence_ids": [],
+  "basis": "两种估值方法分歧超过阈值（扣值不扣结论）：方向保留，点位不给。",
+  "time_horizon": "3-6 个月",
+  "evidence": [
+    {"evidence_id": "ev-diverge", "label": "方法间分歧幅度", "value": 0.35, "unit": "ratio", "as_of": "2026-10-16", "source": "fd-quant:valuation_synthesis"}
+  ],
+  "producer": {"pack": "pack-equity-research", "skill": "equity-research-modeling"}
+}

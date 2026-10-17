@@ -1,0 +1,10 @@
+{
+  "schema_version": "1",
+  "as_of": "2026-10-16",
+  "universe": ["A", "B"],
+  "weights": {"A": 0.6, "B": 0.4},
+  "cash_floor": 0.0,
+  "constraints": {},
+  "evidence": [],
+  "producer": {"pack": "p", "skill": "s"}
+}

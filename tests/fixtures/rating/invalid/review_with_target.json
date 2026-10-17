@@ -1,0 +1,29 @@
+{
+  "__expect_path__": "price_target",
+  "schema_version": "1",
+  "as_of": "2026-10-16",
+  "subject": "600519.SS",
+  "side": "review",
+  "conviction": null,
+  "price_target": 120.0,
+  "target_evidence_ids": [
+    "ev-1"
+  ],
+  "basis": "x",
+  "time_horizon": null,
+  "evidence": [
+    {
+      "evidence_id": "ev-1",
+      "label": "l",
+      "value": 1,
+      "unit": null,
+      "as_of": "2026-10-16",
+      "source": "s"
+    }
+  ],
+  "producer": {
+    "pack": "p",
+    "skill": "s"
+  },
+  "__parity__": "shape"
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": "1",
+  "as_of": "2026-10-16",
+  "subject": "300750.SZ",
+  "side": "review",
+  "conviction": null,
+  "price_target": null,
+  "target_evidence_ids": [],
+  "basis": "证据集不足以支撑方向判断（缺近两季经营数据）。",
+  "time_horizon": null,
+  "evidence": [],
+  "producer": {"pack": "pack-ic-debate", "skill": "ic-adjudication"}
+}

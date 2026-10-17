@@ -1,0 +1,21 @@
+{
+  "__expect_path__": "weights",
+  "schema_version": "1",
+  "as_of": "2026-10-16",
+  "universe": [
+    "A",
+    "B"
+  ],
+  "weights": {
+    "A": 0.7,
+    "B": 0.5
+  },
+  "cash_floor": 0.0,
+  "constraints": {},
+  "evidence": [],
+  "producer": {
+    "pack": "p",
+    "skill": "s"
+  },
+  "__parity__": "relational"
+}

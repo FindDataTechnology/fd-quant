@@ -1,0 +1,18 @@
+{
+  "__expect_path__": "schema_version",
+  "schema_version": "9",
+  "as_of": "2026-10-16",
+  "subject": "600519.SS",
+  "side": "hold",
+  "conviction": null,
+  "price_target": null,
+  "target_evidence_ids": [],
+  "basis": "x",
+  "time_horizon": null,
+  "evidence": [],
+  "producer": {
+    "pack": "p",
+    "skill": "s"
+  },
+  "__parity__": "shape"
+}

@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""tool-surface manifest 双向 selfcheck（mcp-surface-contract）。
+
+断言两个方向：
+  1. **一致**：manifest 声明的工具集 == 运行时注册的工具集。
+     注册表新增/删除工具而 manifest 未同步 → 失败（反向同理）。
+     运行时真值取 `fd_quant.surface.all_surface_tools()`——与上牌入口
+     `fd_quant.server` 注册用的是同一个汇总点，故"能列出"与"能服务"必然是同一份清单。
+  2. **闭合**：任何消费侧暴露的工具集 ⊆ manifest 的 commercial 集。
+     消费侧由 `--consumers` 传入（pack 套件目录或 tool-surface 文件）。本服务
+     目前无消费方（`skills_eligible_for_packs` 为空），故默认只做方向 1；
+     有消费方后加 `--consumers` 即生效。
+
+用法：
+    python3 scripts/selfcheck_surface.py                       # 方向 1 + 反向上牌自检
+    python3 scripts/selfcheck_surface.py --consumers <dir-or-file>
+    python3 scripts/selfcheck_surface.py --gen-check            # 另跑 gen_surface --check
+退出码：0 通过 / 1 失败（列出差异）。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+MANIFEST = REPO / "tool-surface.json"
+SERVER_NAME = "fd-quant"
+
+#: 消费侧点名本服务工具时使用的完整形态：mcp__fd-quant__<tool>
+TOOL_PATTERN = re.compile(rf"mcp__{SERVER_NAME}__([A-Za-z0-9_.\-]+)")
+
+REQUIRED_TOP_KEYS = (
+    "schema", "server", "entry_path", "product_line", "hosting",
+    "description", "skills_eligible_for_packs", "tool_groups", "registry",
+)
+
+
+def fail(problems: list[str]) -> None:
+    print(f"✗ {len(problems)} 项不合规：", file=sys.stderr)
+    for p in problems:
+        print(f"  - {p}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def load_manifest() -> dict:
+    if not MANIFEST.exists():
+        fail([f"manifest 缺失：{MANIFEST}（契约：缺失即未上牌）"])
+    return json.loads(MANIFEST.read_text(encoding="utf-8"))
+
+
+def manifest_tools(m: dict) -> dict[str, str]:
+    """工具名 → 暴露级别。"""
+    out: dict[str, str] = {}
+    for g in m.get("tool_groups", []):
+        level = g.get("level")
+        if level not in ("commercial", "internal"):
+            fail([f"tool_groups.{g.get('group')} 的 level 非法：{level!r}"])
+        for t in g.get("tools", []):
+            if t in out and out[t] != level:
+                fail([f"工具 {t} 在多个 group 中级别冲突"])
+            out[t] = level
+    return out
+
+
+def runtime_tools() -> set[str]:
+    """运行时真值：与上牌入口 `fd_quant.server` 注册同源的汇总点。"""
+    sys.path.insert(0, str(REPO))
+    from fd_quant.surface import all_surface_tools
+
+    return {s.name for s in all_surface_tools()}
+
+
+def check_shape(m: dict) -> list[str]:
+    problems = []
+    for k in REQUIRED_TOP_KEYS:
+        if k not in m:
+            problems.append(f"顶层缺字段：{k}")
+    if m.get("schema") != "mcp-tool-surface/v1":
+        problems.append(f"schema 非法：{m.get('schema')!r}")
+    if m.get("server") != SERVER_NAME:
+        problems.append(f"server 字段应为 {SERVER_NAME!r}，实为 {m.get('server')!r}")
+    if not isinstance(m.get("hosting"), list) or not m["hosting"]:
+        problems.append("hosting 应为非空列表")
+    mt = manifest_tools(m)
+    expected = (m.get("registry") or {}).get("expected_tool_count")
+    if expected != len(mt):
+        problems.append(
+            f"registry.expected_tool_count={expected} 与 manifest 实收 {len(mt)} 不符"
+        )
+    return problems
+
+
+def check_runtime_agreement(m: dict) -> list[str]:
+    """方向 1：manifest ↔ 运行时一致。"""
+    man = set(manifest_tools(m))
+    run = runtime_tools()
+    problems = []
+    added = sorted(run - man)
+    removed = sorted(man - run)
+    if added:
+        problems.append(f"运行时有而 manifest 无（需登记进 tool_groups）：{added}")
+    if removed:
+        problems.append(f"manifest 有而运行时无（需从 tool_groups 删除）：{removed}")
+    return problems
+
+
+def _iter_consumer_files(target: Path) -> list[Path]:
+    if target.is_file():
+        return [target]
+    out: list[Path] = []
+    for pat in ("*.json", "*.md"):
+        out.extend(sorted(target.rglob(pat)))
+    return out
+
+
+def check_consumers(m: dict, target: Path) -> list[str]:
+    """方向 2：消费侧暴露集 ⊆ manifest commercial 集。"""
+    levels = manifest_tools(m)
+    commercial = {t for t, lv in levels.items() if lv == "commercial"}
+    problems = []
+    seen: set[str] = set()
+    for f in _iter_consumer_files(target):
+        try:
+            text = f.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for tool in TOOL_PATTERN.findall(text):
+            seen.add(tool)
+            if tool not in levels:
+                problems.append(f"{f.name}: 点名了 manifest 未登记的工具 {tool}")
+            elif tool not in commercial:
+                problems.append(f"{f.name}: 点名了非 commercial 工具 {tool}（级别 {levels[tool]}）")
+    if not seen:
+        print(f"· 消费侧 {target} 未点名任何 {SERVER_NAME} 工具（无可校验项）")
+    return problems
+
+
+def check_unsurfaced_ok() -> list[str]:
+    """反向上牌自检：故意摘掉一个条目的比对必须**失败**，否则本脚本形同虚设。
+
+    做法：构造一份缺一个工具的 manifest 副本，断言方向 1 会报出该工具。
+    """
+    m = load_manifest()
+    man = manifest_tools(m)
+    if not man:
+        return ["manifest 无工具，无法做反向上牌自检"]
+    victim = sorted(man)[0]
+    broken = json.loads(json.dumps(m))
+    for g in broken["tool_groups"]:
+        if victim in g["tools"]:
+            g["tools"].remove(victim)
+            break
+    diff = check_runtime_agreement(broken)
+    if not any(victim in d for d in diff):
+        return [f"反向自检失败：摘掉 {victim} 后方向 1 未报出该工具（脚本形同虚设）"]
+    return []
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--consumers", type=Path, default=None,
+                    help="消费侧目录或文件（pack 套件 / tool-surface）")
+    ap.add_argument("--gen-check", action="store_true",
+                    help="另跑 gen_surface.py --check（生成器视角的漂移比对）")
+    args = ap.parse_args()
+
+    m = load_manifest()
+    problems = check_shape(m)
+    problems += check_runtime_agreement(m)
+    if args.consumers:
+        problems += check_consumers(m, args.consumers)
+    problems += check_unsurfaced_ok()
+
+    if args.gen_check:
+        rc = subprocess.run(
+            [sys.executable, str(REPO / "scripts" / "gen_surface.py"), "--check"],
+            capture_output=True, text=True,
+        )
+        if rc.returncode != 0:
+            problems.append(f"gen_surface --check 失败：{rc.stdout.strip()} {rc.stderr.strip()}")
+
+    if problems:
+        fail(problems)
+
+    man = manifest_tools(m)
+    by_level: dict[str, int] = {}
+    for lv in man.values():
+        by_level[lv] = by_level.get(lv, 0) + 1
+    summary = " / ".join(f"{k} {v}" for k, v in sorted(by_level.items()))
+    print(f"✓ selfcheck 通过：{len(man)} 工具（{summary}）｜"
+          f"分组 {len(m['tool_groups'])}｜宿主 {m['hosting']}")
+    print("  · 方向 1 manifest ↔ 运行时一致 ✓")
+    print("  · 方向 2 消费侧闭合 " + ("✓（已校验）" if args.consumers else "·（无消费侧，跳过）"))
+    print("  · 反向自检（摘条目应报错）✓")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

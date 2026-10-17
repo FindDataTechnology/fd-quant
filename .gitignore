@@ -1,0 +1,15 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# 运行时产物：账本库是本地状态（默认落系统临时目录，但显式指向时会落在仓内）
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# 工具面离线快照由脚本生成（docs/wire-presets/_sources 那边才是权威快照）
+_sources/

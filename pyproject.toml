@@ -1,0 +1,27 @@
+[project]
+name = "fd-quant"
+version = "0.1.0"
+description = "寻数·柏讯量化能力线：先立契约（Rating / TargetWeights），后接计算面"
+requires-python = ">=3.11"
+dependencies = [
+    "jsonschema>=4.20",
+    "numpy>=1.26",
+]
+
+# 传输层依赖单列：`fd_quant.compute` 七族模块只依赖 numpy/标准库（纯计算，
+# 不取数、不联网、不调 LLM），故做离线回归或把它嵌进别的进程时不必装 fastmcp。
+# 只有 `fd_quant.compute.server`（MCP 入口）需要它——装它才装得进 server
+# 之前 pyproject 漏了这条，fresh install 后启动会 ModuleNotFoundError。
+[project.optional-dependencies]
+server = ["fastmcp>=2.0"]
+test = ["pytest>=7.4"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["fd_quant*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

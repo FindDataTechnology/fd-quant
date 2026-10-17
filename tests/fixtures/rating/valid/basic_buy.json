@@ -1,0 +1,16 @@
+{
+  "schema_version": "1",
+  "as_of": "2026-10-16",
+  "subject": "600519.SS",
+  "side": "buy",
+  "conviction": 0.6,
+  "price_target": 1500.0,
+  "target_evidence_ids": ["ev-dcf", "ev-comps"],
+  "basis": "现金流稳定，估值处于历史中位；渠道库存去化接近尾声。",
+  "time_horizon": "6-12 个月",
+  "evidence": [
+    {"evidence_id": "ev-dcf", "label": "DCF 估值", "value": 1520.5, "unit": "CNY/share", "as_of": "2026-10-16", "source": "fd-quant:dcf"},
+    {"evidence_id": "ev-comps", "label": "同业 PE 中位", "value": 28.4, "unit": "x", "as_of": "2026-10-15", "source": "daas:astock_peer_pe"}
+  ],
+  "producer": {"pack": "pack-equity-research", "skill": "equity-research-thesis", "run_id": "run-001"}
+}

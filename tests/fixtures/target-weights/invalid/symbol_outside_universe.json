@@ -1,0 +1,21 @@
+{
+  "__expect_path__": "weights",
+  "schema_version": "1",
+  "as_of": "2026-10-16",
+  "universe": [
+    "600519.SS",
+    "000001.SZ"
+  ],
+  "weights": {
+    "600519.SS": 0.4,
+    "300750.SZ": 0.3
+  },
+  "cash_floor": 0.0,
+  "constraints": {},
+  "evidence": [],
+  "producer": {
+    "pack": "p",
+    "skill": "s"
+  },
+  "__parity__": "relational"
+}

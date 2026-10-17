@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://finddatatech.cloud/schemas/target-weights.schema.json",
+  "title": "TargetWeights",
+  "description": "目标权重契约：策略对一组标的目标仓位的表达。回测与纸面实盘消费同一输出（权重向量契约）。校验拒绝而不自动归一化——违规输入由生产者修正，不在契约边界被静默缩放。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "as_of", "universe", "weights", "cash_floor", "constraints", "evidence", "producer"],
+  "properties": {
+    "schema_version": {
+      "description": "契约版本。仅支持 \"1\"。",
+      "const": "1"
+    },
+    "as_of": {
+      "description": "权重对应的决策日（ISO 日期）。此后的数据不得进入本次权重。",
+      "type": "string",
+      "format": "date"
+    },
+    "universe": {
+      "description": "参与标的列表（weights 的键必须是其子集）。",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+  "weights": {
+    "description": "标的到权重的映射。不变式：非负；键属于 universe；Σ ≤ 1（容差 1e-9）；cash_floor + Σ ≤ 1（同容差）。前两条与键归属由本 schema 强制；求和类不变式（Σ ≤ 1、cash_floor + Σ ≤ 1）需要跨字段算术，JSON Schema 无法表达，由契约层的 Python 校验强制（tests/test_contract_parity.py 的算术类断言钉住两侧分工）。",
+    "type": "object",
+    "additionalProperties": {"type": "number", "minimum": 0}
+  },
+    "cash_floor": {
+      "description": "目标最低现金比例（风险资产之外）。注意这里记录的是目标值，与 Σweights 相加不得超 1。",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "constraints": {
+      "description": "约束声明（至少可表达单票上限与板块上限），供回测与风控消费。",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_weight_per_symbol": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "max_weight_per_sector": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+      }
+    },
+    "evidence": {
+      "description": "证据数组（形状与 Rating 的 evidence 一致）。",
+      "type": "array",
+      "items": {"$ref": "#/$defs/evidence"}
+    },
+    "producer": {"$ref": "#/$defs/producer"}
+  },
+  "$defs": {
+    "evidence": {
+      "description": "单条证据：值、单位、期别与来源四要素 + 稳定句柄与人类标签。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_id", "label", "value", "unit", "as_of", "source"],
+      "properties": {
+        "evidence_id": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "value": {"type": ["number", "string", "null"]},
+        "unit": {"type": ["string", "null"]},
+        "as_of": {"type": "string", "format": "date"},
+        "source": {"type": "string", "minLength": 1}
+      }
+    },
+    "producer": {
+      "description": "产出方：pack 与 skill 决定归因，run_id 可选。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pack", "skill"],
+      "properties": {
+        "pack": {"type": "string", "minLength": 1},
+        "skill": {"type": "string", "minLength": 1},
+        "run_id": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

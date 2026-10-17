@@ -1,0 +1,29 @@
+{
+  "__expect_path__": "target_evidence_ids",
+  "schema_version": "1",
+  "as_of": "2026-10-16",
+  "subject": "600519.SS",
+  "side": "buy",
+  "conviction": 0.5,
+  "price_target": 1500.0,
+  "target_evidence_ids": [
+    "ev-missing"
+  ],
+  "basis": "x",
+  "time_horizon": null,
+  "evidence": [
+    {
+      "evidence_id": "ev-other",
+      "label": "l",
+      "value": 1,
+      "unit": null,
+      "as_of": "2026-10-16",
+      "source": "s"
+    }
+  ],
+  "producer": {
+    "pack": "p",
+    "skill": "s"
+  },
+  "__parity__": "relational"
+}
