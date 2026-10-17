@@ -177,7 +177,7 @@ def test_compute_layer_package_list_is_closed():
                "textwrap", "pathlib", "operator", "copy", "enum", "fractions",
                "decimal", "statistics", "random_nothing", "builtins", "hashlib",
                "subprocess", "tempfile", "traceback", "contextlib", "inspect",
-               "__future__", "importlib"}
+               "__future__", "importlib", "starlette"}
 
     root = Path(__file__).resolve().parents[1] / "fd_quant" / "compute"
     seen: set[str] = set()

@@ -28,4 +28,7 @@ EXPOSE 8080
 
 # 纯计算面：无状态、不取数、不读库、不联网。默认 HTTP 传输；
 # stdio 形态由 MCP 客户端以 `python -m fd_quant.compute.server` 直接拉起。
-CMD ["python", "-m", "fd_quant.compute.server", "--http", "8080", "--host", "0.0.0.0"]
+# 用顶层入口 `fd_quant.server`（= 计算面七族 + 账本四工具，与 tool-surface.json
+# 同一份清单）。`fd_quant.compute.server` 只有 46 个纯计算工具——用它起服务会让
+# manifest 声明的 50 个工具里有 4 个不存在，而 selfcheck 若也读意图模块就发现不了。
+CMD ["python", "-m", "fd_quant.server", "--http", "8080", "--host", "0.0.0.0"]

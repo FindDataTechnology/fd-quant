@@ -68,11 +68,24 @@ def manifest_tools(m: dict) -> dict[str, str]:
 
 
 def runtime_tools() -> set[str]:
-    """运行时真值：与上牌入口 `fd_quant.server` 注册同源的汇总点。"""
-    sys.path.insert(0, str(REPO))
-    from fd_quant.surface import all_surface_tools
+    """运行时真值：**问真实 server 要**，不读意图模块。
 
-    return {s.name for s in all_surface_tools()}
+    **为什么不能读 `surface.all_surface_tools()`**：那读的是"我们打算注册什么"，
+    不是"服务真的注册了什么"。本仓曾因此漏掉整个账本族：`compute/server.py` 用
+    `compute.all_tools()`（46 个），而 manifest 与 selfcheck 都读 surface（50 个），
+    两边各自"一致"，缺口无人发现。改成问**上牌入口** `fd_quant.server` 的真实注册表
+    后，这类"意图与事实分叉"会立刻红。
+
+    实现：import server 模块取 `app`，用 FastMCP 的 `_list_tools()` 枚举。server
+    在 import 期不连库、不联网（账本工具只是声明，DB 路径在调用时才解析），故安全。
+    """
+    sys.path.insert(0, str(REPO))
+    import asyncio
+
+    from fd_quant.server import app
+
+    tools = asyncio.run(app._list_tools())
+    return {t.name for t in tools}
 
 
 def check_shape(m: dict) -> list[str]:

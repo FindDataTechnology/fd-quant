@@ -58,6 +58,33 @@ def build_server() -> FastMCP:
 
     for spec in all_surface_tools():
         app.tool(spec.fn, name=spec.name, description=spec.doc)
+
+    @app.custom_route("/health", methods=["GET"])
+    async def health(_request):  # noqa: ANN001 — FastMCP 传 Request，此处不用
+        """探针端点：只回答"进程活着且工具面已装配"。
+
+        **为什么不拿 `/mcp` 当探针**：它只接 POST，GET 应答 400/405 是协议正常
+        形态。拿它当探针会把"服务健康"读成"服务挂了"——本仓在网关侧踩过同类
+        判读错误（裸 405 曾被误当故障信号）。
+        """
+        from starlette.responses import JSONResponse
+
+        from .surface import missing_families, tools_by_group
+
+        groups = {g: len(ts) for g, ts in tools_by_group().items()}
+        payload = {
+            "status": "ok",
+            "server": SERVER_NAME,
+            "tools": sum(groups.values()),
+            "groups": groups,
+        }
+        # 缺族不是致命（开发期），但必须在探针里可见——否则"少了一族"会被当成健康。
+        missing = missing_families()
+        if missing:
+            payload["missing_families"] = missing
+            payload["status"] = "degraded"
+        return JSONResponse(payload, status_code=200 if not missing else 503)
+
     return app
 
 
