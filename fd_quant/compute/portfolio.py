@@ -64,6 +64,40 @@ def _count(x: Any) -> int:
     return int(x)
 
 
+def _aligned_turnover(
+    weights: np.ndarray,
+    symbols: Sequence[str],
+    weights_prior: np.ndarray,
+    symbols_prior: Sequence[str],
+) -> dict:
+    """Per-instrument weight deltas across two periods.
+
+    The book is keyed by instrument code rather than by list position: the same
+    holdings passed in a different order are the same portfolio, and subtracting
+    by position would report a full round trip for a book that never traded.
+    Instruments present on only one side are matched against weight 0, so a new
+    entry or a full exit contributes its full weight — that is a real trade, not
+    a mismatch.
+
+    Reduction is over instruments sorted by code so the sum is order-independent
+    and reproducible (the compute plane's determinism rule).
+    """
+    cur: dict[str, float] = {}
+    for code, w in zip(symbols, weights):
+        cur[str(code)] = cur.get(str(code), 0.0) + float(w)
+    prev: dict[str, float] = {}
+    for code, w in zip(symbols_prior, weights_prior):
+        prev[str(code)] = prev.get(str(code), 0.0) + float(w)
+
+    names = sorted(set(cur) | set(prev))
+    deltas = np.array(
+        [abs(cur.get(n, 0.0) - prev.get(n, 0.0)) for n in names],
+        dtype=np.float64,
+    )
+    traded = sum(1 for n in names if cur.get(n, 0.0) != prev.get(n, 0.0))
+    return {"deltas": deltas, "names_traded": traded}
+
+
 def _first_nonfinite(arr: np.ndarray) -> Optional[int]:
     for i in range(len(arr)):
         if not math.isfinite(float(arr[i])):
@@ -1159,19 +1193,32 @@ def summarize_turnover(
             "warmup": _warmup({"turnover": None}),
         })
 
-    deltas = np.empty(n, dtype=np.float64)
-    for i in range(n):
-        deltas[i] = abs(float(w[i]) - float(prior[i]))
-    turnover = 0.5 * deterministic_reduction(deltas)
     if symbols is not None and symbols_prior is not None:
-        names_traded = sum(1 for i in range(n) if float(w[i]) != float(prior[i]))
+        # Align by instrument, not by position. Two periods holding the same
+        # book in a different order are the same portfolio: subtracting position
+        # i from position i would report a full round-trip on a book that never
+        # traded. Instruments absent from one side count as weight 0 (a new
+        # position, or an exit), which is what makes the sum a real turnover.
+        aligned = _aligned_turnover(w, symbols, prior, symbols_prior)
+        turnover = 0.5 * deterministic_reduction(aligned["deltas"])
+        names_traded = aligned["names_traded"]
+        turnover_basis = "aligned"
+    else:
+        deltas = np.empty(n, dtype=np.float64)
+        for i in range(n):
+            deltas[i] = abs(float(w[i]) - float(prior[i]))
+        turnover = 0.5 * deterministic_reduction(deltas)
+        if symbols is not None and symbols_prior is not None:
+            names_traded = sum(1 for i in range(n) if float(w[i]) != float(prior[i]))
+        turnover_basis = "positional"
 
     payload = {
         "turnover": _num(turnover),
         "baseline": baseline,
+        "turnover_basis": turnover_basis,
         "position_count": n,
         "reason": None,
-        "params": {},
+        "params": {"turnover_basis": turnover_basis},
         "warmup": _warmup({"turnover": turnover}),
     }
     if symbols is not None and symbols_prior is not None:

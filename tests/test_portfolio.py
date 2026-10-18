@@ -437,6 +437,71 @@ def test_turnover_omitted_prior_is_zero_baseline_initial_build():
     assert "names_traded" not in r  # 未给 symbols → 不含该键（不是 null）
 
 
+def test_turnover_aligns_by_symbol_not_by_position():
+    """同一组合换个顺序传入 → 没发生轮动，换手必须为 0。
+
+    逐位相减会把「B,A」与「A,B」当成两次全量买卖，报出 1.0 的换手——一个
+    从未交易过的组合因此看起来像做了一次完整往返。标的身份才是口径。
+    """
+    ds = [qd.as_of(1)]
+    r = summarize_turnover(
+        ds, [0.4, 0.6], as_of=qd.of_dates_max(ds),
+        weights_prior=[0.6, 0.4],
+        symbols=["B", "A"], symbols_prior=["A", "B"],
+    )
+    assert r["turnover"] == 0.0
+    assert r["names_traded"] == 0
+    assert r["turnover_basis"] == "aligned"
+
+
+def test_turnover_detects_real_rotation_after_reordering():
+    """顺序打乱后仍能识别真实轮动：A 0.6→0.4、B 0.4→0.6，换手 0.2。"""
+    ds = [qd.as_of(1)]
+    r = summarize_turnover(
+        ds, [0.6, 0.4], as_of=qd.of_dates_max(ds),
+        weights_prior=[0.6, 0.4],
+        symbols=["B", "A"], symbols_prior=["A", "B"],
+    )
+    assert r["turnover"] == pytest.approx(0.2, rel=1e-12)
+    assert r["names_traded"] == 2
+
+
+def test_turnover_counts_exit_and_entry_as_full_weight():
+    """一进一出：B 清仓、C 新进，各按全额权重计入换手（0.5 × (0.4+0.4)）。"""
+    ds = [qd.as_of(1)]
+    r = summarize_turnover(
+        ds, [0.6, 0.4], as_of=qd.of_dates_max(ds),
+        weights_prior=[0.6, 0.4],
+        symbols=["A", "C"], symbols_prior=["A", "B"],
+    )
+    assert r["turnover"] == pytest.approx(0.4, rel=1e-12)
+    assert r["names_traded"] == 2
+
+
+def test_turnover_without_symbols_declares_positional_basis():
+    """缺标的代码时退回逐位口径，并在返回中声明该口径。"""
+    ds = [qd.as_of(1)]
+    r = summarize_turnover(
+        ds, [0.6, 0.4], as_of=qd.of_dates_max(ds), weights_prior=[0.4, 0.6],
+    )
+    assert r["turnover_basis"] == "positional"
+    assert r["params"]["turnover_basis"] == "positional"
+    assert "names_traded" not in r
+
+
+def test_turnover_alignment_is_deterministic():
+    """同一输入两次调用逐位一致（标的后排序归约）。"""
+    ds = [qd.as_of(1)]
+    kw = dict(
+        weights_prior=[0.6, 0.4],
+        symbols=["B", "A"], symbols_prior=["A", "B"],
+    )
+    a = summarize_turnover(ds, [0.6, 0.4], as_of=qd.of_dates_max(ds), **kw)
+    b = summarize_turnover(ds, [0.6, 0.4], as_of=qd.of_dates_max(ds), **kw)
+    assert a["turnover"] == b["turnover"]
+    assert a["names_traded"] == b["names_traded"]
+
+
 # ── 年化收益 / 年化波动 ─────────────────────────────────────────
 
 
