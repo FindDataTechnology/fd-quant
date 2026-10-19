@@ -32,3 +32,8 @@ fd_quant = ["schemas/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `external`: 需要起子进程 / 占本地端口（或真实外部服务）；发布门用
+# `-m "not external"` 跑，这些用例另行显式执行。与 law-bench 同约定。
+markers = [
+    "external: requires a subprocess/local port or a live service; excluded from the release gate",
+]
