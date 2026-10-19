@@ -13,7 +13,7 @@ dependencies = [
 # 只有 `fd_quant.compute.server`（MCP 入口）需要它——装它才装得进 server
 # 之前 pyproject 漏了这条，fresh install 后启动会 ModuleNotFoundError。
 [project.optional-dependencies]
-server = ["fastmcp>=2.0"]
+server = ["fastmcp>=3.4,<4"]
 test = ["pytest>=7.4"]
 
 [build-system]
