@@ -183,7 +183,14 @@ def test_a_wrong_declaration_is_caught_at_call_time():
 
         with pytest.raises(Exception) as exc:
             asyncio.run(call())
-        assert "Output validation error" in str(exc.value)
+        # 断言「行为」而非错误文案：fastmcp 3.x 报 "Output validation error"，
+        # 4.x 改成 "Invalid structured content returned by tool ..."，
+        # 写死文案会在依赖漂移时假红（本机装 4.1.0 而 pyproject 声明 <4 时实测踩到）。
+        # 这里只要求：声明与真实输出不符时，调用期必须被拦下。
+        assert any(
+            marker in str(exc.value)
+            for marker in ('Output validation error', 'Invalid structured content')
+        )
     finally:
         oschemas.SCHEMA_PATH = Path(original_read.__self__)  # type: ignore[attr-defined]
         oschemas.load.cache_clear()
