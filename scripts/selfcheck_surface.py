@@ -122,6 +122,57 @@ def check_runtime_agreement(m: dict) -> list[str]:
     return problems
 
 
+REQUIRED_HINTS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
+
+
+def runtime_annotations() -> dict[str, dict]:
+    """运行时真值：每个工具在协议层实际声明的属性（不读 surface 意图）。"""
+    sys.path.insert(0, str(REPO))
+    import asyncio
+
+    from fd_quant.server import app
+
+    out: dict[str, dict] = {}
+    for t in asyncio.run(app._list_tools()):
+        a = t.annotations
+        out[t.name] = {} if a is None else {
+            "readOnlyHint": a.readOnlyHint,
+            "destructiveHint": a.destructiveHint,
+            "idempotentHint": a.idempotentHint,
+            "openWorldHint": a.openWorldHint,
+        }
+    return out
+
+
+def check_annotations(m: dict) -> list[str]:
+    """manifest 行为属性 ↔ 运行时注册值逐项相等（两个方向都查）。
+
+    漏登记 → 客户端拿到 None；谎报只读 → 客户端自动批准一个写库工具。
+    两者都是上牌缺陷，故一律失败并点名工具+字段。
+    """
+    declared = m.get("tool_annotations")
+    if not isinstance(declared, dict):
+        return ["manifest 缺 tool_annotations（行为属性须随工具一并上牌）"]
+    runtime = runtime_annotations()
+    man_tools = set(manifest_tools(m))
+    problems: list[str] = []
+    for name in sorted(man_tools - set(declared)):
+        problems.append(f"{name}: manifest 未声明行为属性")
+    for name in sorted(set(declared) - man_tools):
+        problems.append(f"{name}: tool_annotations 登记了未上牌的工具")
+    for name in sorted(man_tools & set(declared)):
+        d = declared[name]
+        missing = [k for k in REQUIRED_HINTS if k not in d]
+        if missing:
+            problems.append(f"{name}: 属性不全，缺 {missing}")
+            continue
+        rt = runtime.get(name, {})
+        for k in REQUIRED_HINTS:
+            if rt.get(k) != d[k]:
+                problems.append(f"{name}.{k}: manifest 声明 {d[k]!r} 与运行时 {rt.get(k)!r} 不符")
+    return problems
+
+
 def _iter_consumer_files(target: Path) -> list[Path]:
     if target.is_file():
         return [target]
@@ -185,6 +236,7 @@ def main() -> int:
     m = load_manifest()
     problems = check_shape(m)
     problems += check_runtime_agreement(m)
+    problems += check_annotations(m)
     if args.consumers:
         problems += check_consumers(m, args.consumers)
     problems += check_unsurfaced_ok()

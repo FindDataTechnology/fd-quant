@@ -96,6 +96,11 @@ def build_manifest() -> dict:
         # 工具数从运行时派生：写死在描述里必然随族增长而漂，而描述也是清单的一部分。
         "description": DESCRIPTION_TEMPLATE.format(count=total),
         "skills_eligible_for_packs": SKILLS_ELIGIBLE,
+        # 行为属性同样从声明表派生（mcp-tool-annotations）：清单里再手抄一份
+        # 就等于给协议层属性造了第二个事实源，两边必然漂。
+        "tool_annotations": {
+            spec.name: dict(spec.tool_annotations) for spec in all_surface_tools()
+        },
         "tool_groups": groups,
         "registry": {
             "entry_path": ENTRY_PATH,
