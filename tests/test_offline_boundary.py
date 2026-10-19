@@ -222,3 +222,39 @@ def test_stdlib_only_imports_do_not_mask_a_network_client():
         "the compute layer must use np.random.default_rng(seed) for any randomness, "
         "never the `random`/`secrets` modules:\n" + "\n".join(hits)
     )
+
+def test_readonly_annotated_tools_write_no_files(tmp_path, monkeypatch, network_blocked):
+    """标为只读的工具在真实调用中不得产生任何文件写入。
+
+    **为什么这条不能靠读代码**：只读是一条**协议承诺**（客户端据此自动批准），
+    而"实现里偷偷写了个缓存/日志/临时库"是代码演进中最容易发生的漂移——一个
+    新增的 `open(..., "w")` 就能让 46 个工具的自动批准变成一次静默写盘。所以
+    这里做**行为**验证：把 cwd 切到空目录，跑一遍全部只读工具，断言目录里
+    仍然空无一物，且工作区原有文件未被改动。
+
+    账本族不在此列（它们本来就写库，属性已标非只读）。
+    """
+    import os
+    from pathlib import Path
+
+    readonly = [t for t in ALL if t.tool_annotations.get("readOnlyHint") is True]
+    assert readonly, "没有任何工具标为只读，说明属性声明坏了"
+
+    work = tmp_path / "cwd"
+    work.mkdir()
+    monkeypatch.chdir(work)
+
+    for spec in readonly:
+        kw = _kwargs_for(spec)
+        if kw is None:
+            continue  # 快照型工具由合规闸门覆盖，见上方说明
+        r = spec.fn(**kw)
+        assert isinstance(r, dict)
+
+    created = sorted(
+        str(p.relative_to(work)) for p in Path(work).rglob("*") if p.is_file()
+    )
+    assert created == [], (
+        f"标为只读的工具在调用中写了文件：{created} —— 只读属性与实现不符，"
+        f"要么去掉写盘、要么把该工具改成非只读"
+    )
