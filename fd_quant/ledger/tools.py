@@ -232,11 +232,33 @@ def summarize_pack_performance(
     return _envelope("summarize_pack_performance", as_of, store, result)
 
 
+#: 账本族的协议层行为属性。四个工具都写本地 SQLite，但**写入语义不同**，
+#: 这个区别必须在协议层可见——否则客户端只能把「检索历史决策」和「落一条
+#: 决策」当成同一类东西，对前者弹确认、或对后者静默自动批准。
+#:
+#: - `record_decision` / `settle_decision`：写库。**非幂等**——重复提交同一个
+#:   决策会被幂等键拒绝并返回既有 id，但「被拒」与「成功」是两种结果，
+#:   自动重试不安全。`destructiveHint=False`：只追加，不改写既有行。
+#: - `retrieve_decisions` / `summarize_pack_performance`：只读，幂等。
+_LEDGER_WRITE = {
+    "readOnlyHint": False,
+    "destructiveHint": False,   # 追加式，不就地改写
+    "idempotentHint": False,    # 重复提交被拒 ≠ 幂等成功
+    "openWorldHint": False,     # 不取数、不联网
+}
+_LEDGER_READ = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": False,
+}
+
 TOOLS: list[ToolSpec] = [
-    ToolSpec("record_decision", GROUP, record_decision),
-    ToolSpec("settle_decision", GROUP, settle_decision),
-    ToolSpec("retrieve_decisions", GROUP, retrieve_decisions),
-    ToolSpec("summarize_pack_performance", GROUP, summarize_pack_performance),
+    ToolSpec("record_decision", GROUP, record_decision, tool_annotations=_LEDGER_WRITE),
+    ToolSpec("settle_decision", GROUP, settle_decision, tool_annotations=_LEDGER_WRITE),
+    ToolSpec("retrieve_decisions", GROUP, retrieve_decisions, tool_annotations=_LEDGER_READ),
+    ToolSpec("summarize_pack_performance", GROUP, summarize_pack_performance,
+             tool_annotations=_LEDGER_READ),
 ]
 
 #: 默认持有期在描述之外也对调用方可见（`summarize_pack_performance` 的分档默认值）。

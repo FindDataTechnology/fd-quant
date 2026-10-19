@@ -57,7 +57,8 @@ def build_server() -> FastMCP:
         )
 
     for spec in all_surface_tools():
-        app.tool(spec.fn, name=spec.name, description=spec.doc)
+        app.tool(spec.fn, name=spec.name, description=spec.doc,
+                 annotations=spec.tool_annotations)
 
     @app.custom_route("/health", methods=["GET"])
     async def health(_request):  # noqa: ANN001 — FastMCP 传 Request，此处不用

@@ -13,6 +13,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+#: 计算族的缺省行为属性：纯函数，无副作用，重复调用结果相同，不触达外部世界。
+#: `openWorldHint=False` 是**事实**而非保守声明——计算层被
+#: `tests/test_offline_boundary.py` 钉住不得 import sqlite3/网络/LLM。
+_READONLY_ANNOTATIONS: dict[str, Any] = {
+    "readOnlyHint": True,
+    "destructiveHint": False,
+    "idempotentHint": True,
+    "openWorldHint": False,
+}
+
 # 族分组 → 面向 tool-surface.json 的 level 标注
 GROUP_LEVELS: dict[str, str] = {
     "technical_indicators": "commercial",
@@ -33,6 +43,11 @@ class ToolSpec:
     描述，两者都是 MCP 面向调用方的唯一事实源，复制一份到声明里必然会漂移。
     描述必须自足：输入形状、参数默认值、单位、`as_of` 要求、warmup 语义、
     返回形状；由 `tests/test_tool_surface.py` 断言要素齐备。
+
+    `annotations` 是 MCP 协议层的行为属性（`readOnlyHint` / `destructiveHint` /
+    `idempotentHint` / `openWorldHint`），决定客户端能否自动批准。缺省为
+    **只读 + 幂等**：计算族全部是无副作用的纯函数，把它们标成可写会让客户端
+    对 46 个纯计算工具逐个弹确认；账本族必须显式覆盖（见 `ledger/tools.py`）。
     """
 
     name: str
@@ -42,6 +57,9 @@ class ToolSpec:
     data_sources: tuple[str, ...] = ()
     notes: Optional[str] = None
     level: Optional[str] = None  # None → 取 GROUP_LEVELS[group]
+    tool_annotations: dict[str, Any] = field(
+        default_factory=lambda: dict(_READONLY_ANNOTATIONS)
+    )
 
     @property
     def effective_level(self) -> str:
