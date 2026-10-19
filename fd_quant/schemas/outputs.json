@@ -1,0 +1,3417 @@
+{
+  "schema": "fd-quant-output-schemas/v1",
+  "note": "由 scripts/gen_output_schemas.py 从运行时实测生成。required = 多组输入下键集合的交集；类型取并集（null 是「该值不存在」的正式表达）。payload/target_weights 引用契约真源。",
+  "envelope": [
+    "as_of",
+    "input_start",
+    "input_end",
+    "input_length",
+    "evidence"
+  ],
+  "tools": {
+    "build_valuation_synthesis": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "assumptions": {
+          "type": "object"
+        },
+        "disagreement": {
+          "type": "number"
+        },
+        "disagreement_note": {
+          "type": "null"
+        },
+        "disagreement_threshold": {
+          "type": "number"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "null"
+        },
+        "input_length": {
+          "type": "null"
+        },
+        "input_start": {
+          "type": "null"
+        },
+        "max": {
+          "type": "number"
+        },
+        "median": {
+          "type": "number"
+        },
+        "method_count": {
+          "type": "integer"
+        },
+        "method_values": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "min": {
+          "type": "number"
+        },
+        "note": {
+          "type": "string"
+        },
+        "outliers": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "params": {
+          "type": "object"
+        },
+        "price_target": {
+          "type": "number"
+        },
+        "warmup": {
+          "type": "object"
+        },
+        "weighting_basis": {
+          "type": "string"
+        },
+        "weights_used": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "assumptions",
+        "disagreement",
+        "disagreement_note",
+        "disagreement_threshold",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "max",
+        "median",
+        "method_count",
+        "method_values",
+        "min",
+        "note",
+        "outliers",
+        "params",
+        "price_target",
+        "warmup",
+        "weighting_basis",
+        "weights_used"
+      ],
+      "additionalProperties": false
+    },
+    "check_observation_sufficiency": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "first_date": {
+          "type": "string"
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "last_date": {
+          "type": "string"
+        },
+        "missing_count": {
+          "type": "integer"
+        },
+        "observation_count": {
+          "type": "integer"
+        },
+        "params": {
+          "type": "object"
+        },
+        "point_count": {
+          "type": "integer"
+        },
+        "ratio": {
+          "type": "number"
+        },
+        "reason": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "required_observations": {
+          "type": "integer"
+        },
+        "shortfall": {
+          "type": "integer"
+        },
+        "span_days": {
+          "type": "integer"
+        },
+        "sufficient": {
+          "type": "boolean"
+        },
+        "surplus": {
+          "type": "integer"
+        },
+        "usable_observations": {
+          "type": "integer"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "first_date",
+        "input_end",
+        "input_length",
+        "input_start",
+        "last_date",
+        "missing_count",
+        "observation_count",
+        "params",
+        "point_count",
+        "ratio",
+        "reason",
+        "required_observations",
+        "shortfall",
+        "span_days",
+        "sufficient",
+        "surplus",
+        "usable_observations",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "check_series_as_of_bounds": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "first_date": {
+          "type": "string"
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "is_complete": {
+          "type": "boolean"
+        },
+        "last_date": {
+          "type": "string"
+        },
+        "missing_count": {
+          "type": "integer"
+        },
+        "missing_ratio": {
+          "type": "number"
+        },
+        "params": {
+          "type": "object"
+        },
+        "point_count": {
+          "type": "integer"
+        },
+        "span_days": {
+          "type": "integer"
+        },
+        "warmup": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "first_date",
+        "input_end",
+        "input_length",
+        "input_start",
+        "is_complete",
+        "last_date",
+        "missing_count",
+        "missing_ratio",
+        "params",
+        "point_count",
+        "span_days",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_atr": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "value": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "value",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_bollinger": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "lower": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "middle": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "params": {
+          "type": "object"
+        },
+        "upper": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "lower",
+        "middle",
+        "params",
+        "upper",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_cash_flow_quality": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "cfo_to_net_income": {
+          "type": "number"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "free_cash_flow": {
+          "type": "number"
+        },
+        "input_end": {
+          "type": "null"
+        },
+        "input_length": {
+          "type": "null"
+        },
+        "input_start": {
+          "type": "null"
+        },
+        "note": {
+          "type": "null"
+        },
+        "params": {
+          "type": "object"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "cfo_to_net_income",
+        "evidence",
+        "free_cash_flow",
+        "input_end",
+        "input_length",
+        "input_start",
+        "note",
+        "params",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_cci": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "value": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "value",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_comparable_multiples": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "assumptions": {
+          "type": "object"
+        },
+        "clipped_count": {
+          "type": "integer"
+        },
+        "clipped_peers": {
+          "type": "null"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "implied_valuation": {
+          "type": "number"
+        },
+        "input_end": {
+          "type": "null"
+        },
+        "input_length": {
+          "type": "null"
+        },
+        "input_start": {
+          "type": "null"
+        },
+        "lower_bound": {
+          "type": "number"
+        },
+        "mean": {
+          "type": "number"
+        },
+        "mean_original": {
+          "type": "number"
+        },
+        "median": {
+          "type": "number"
+        },
+        "median_original": {
+          "type": "number"
+        },
+        "original": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "p25": {
+          "type": "number"
+        },
+        "p25_original": {
+          "type": "number"
+        },
+        "p75": {
+          "type": "number"
+        },
+        "p75_original": {
+          "type": "number"
+        },
+        "params": {
+          "type": "object"
+        },
+        "peer_names": {
+          "type": "null"
+        },
+        "upper_bound": {
+          "type": "number"
+        },
+        "warmup": {
+          "type": "object"
+        },
+        "winsorized": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        }
+      },
+      "required": [
+        "as_of",
+        "assumptions",
+        "clipped_count",
+        "clipped_peers",
+        "evidence",
+        "implied_valuation",
+        "input_end",
+        "input_length",
+        "input_start",
+        "lower_bound",
+        "mean",
+        "mean_original",
+        "median",
+        "median_original",
+        "original",
+        "p25",
+        "p25_original",
+        "p75",
+        "p75_original",
+        "params",
+        "peer_names",
+        "upper_bound",
+        "warmup",
+        "winsorized"
+      ],
+      "additionalProperties": false
+    },
+    "compute_dmi": {
+      "type": "object",
+      "properties": {
+        "adx": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "minus_di": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "params": {
+          "type": "object"
+        },
+        "plus_di": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "adx",
+        "as_of",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "minus_di",
+        "params",
+        "plus_di",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_dupont": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "factors": {
+          "type": "object"
+        },
+        "input_end": {
+          "type": "null"
+        },
+        "input_length": {
+          "type": "null"
+        },
+        "input_start": {
+          "type": "null"
+        },
+        "params": {
+          "type": "object"
+        },
+        "product": {
+          "type": "number"
+        },
+        "residual": {
+          "type": "number"
+        },
+        "roe": {
+          "type": "number"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "factors",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "product",
+        "residual",
+        "roe",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_efficiency": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "basis": {
+          "type": "string"
+        },
+        "basis_by_ratio": {
+          "type": "object"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "null"
+        },
+        "input_length": {
+          "type": "null"
+        },
+        "input_start": {
+          "type": "null"
+        },
+        "params": {
+          "type": "object"
+        },
+        "ratios": {
+          "type": "object"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "basis",
+        "basis_by_ratio",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "ratios",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_ema": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "value": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "value",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_factor_exposure": {
+      "type": "object",
+      "properties": {
+        "alpha": {
+          "type": "number"
+        },
+        "as_of": {
+          "type": "string"
+        },
+        "beta": {
+          "type": "number"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "n_dropped": {
+          "type": "integer"
+        },
+        "n_observations": {
+          "type": "integer"
+        },
+        "params": {
+          "type": "object"
+        },
+        "r_squared": {
+          "type": "number"
+        },
+        "reason": {
+          "type": "null"
+        },
+        "residual_stdev": {
+          "type": "number"
+        },
+        "t_alpha": {
+          "type": "number"
+        },
+        "t_beta": {
+          "type": "number"
+        },
+        "used_indices": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "alpha",
+        "as_of",
+        "beta",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "n_dropped",
+        "n_observations",
+        "params",
+        "r_squared",
+        "reason",
+        "residual_stdev",
+        "t_alpha",
+        "t_beta",
+        "used_indices",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_grouped_returns": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "monotonic": {
+          "type": "boolean"
+        },
+        "n_dropped": {
+          "type": "integer"
+        },
+        "n_observations": {
+          "type": "integer"
+        },
+        "params": {
+          "type": "object"
+        },
+        "top_minus_bottom": {
+          "type": "number"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "groups",
+        "input_end",
+        "input_length",
+        "input_start",
+        "monotonic",
+        "n_dropped",
+        "n_observations",
+        "params",
+        "top_minus_bottom",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_growth": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "null"
+        },
+        "input_length": {
+          "type": "null"
+        },
+        "input_start": {
+          "type": "null"
+        },
+        "params": {
+          "type": "object"
+        },
+        "ratios": {
+          "type": "object"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "ratios",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_information_coefficient": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "ic": {
+          "type": "number"
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "n_dropped": {
+          "type": "integer"
+        },
+        "n_observations": {
+          "type": "integer"
+        },
+        "params": {
+          "type": "object"
+        },
+        "used_indices": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "ic",
+        "input_end",
+        "input_length",
+        "input_start",
+        "method",
+        "n_dropped",
+        "n_observations",
+        "params",
+        "used_indices",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_interest_coverage": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "null"
+        },
+        "input_length": {
+          "type": "null"
+        },
+        "input_start": {
+          "type": "null"
+        },
+        "interest_coverage": {
+          "type": "number"
+        },
+        "params": {
+          "type": "object"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "interest_coverage",
+        "params",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_kdj": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "d": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "j": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "k": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "params": {
+          "type": "object"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "d",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "j",
+        "k",
+        "params",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_leverage_and_liquidity": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "null"
+        },
+        "input_length": {
+          "type": "null"
+        },
+        "input_start": {
+          "type": "null"
+        },
+        "params": {
+          "type": "object"
+        },
+        "ratios": {
+          "type": "object"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "ratios",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_macd": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "dea": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "dif": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "histogram": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "dea",
+        "dif",
+        "evidence",
+        "histogram",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_obv": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "value": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "value",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_profitability": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "null"
+        },
+        "input_length": {
+          "type": "null"
+        },
+        "input_start": {
+          "type": "null"
+        },
+        "params": {
+          "type": "object"
+        },
+        "ratios": {
+          "type": "object"
+        },
+        "sources": {
+          "type": "object"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "ratios",
+        "sources",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_rsi": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "value": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "value",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "compute_sensitivity_grid": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "assumptions": {
+          "type": "object"
+        },
+        "base_case_value": {
+          "type": "number"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "grid": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "null"
+        },
+        "input_length": {
+          "type": "null"
+        },
+        "input_start": {
+          "type": "null"
+        },
+        "params": {
+          "type": "object"
+        },
+        "value_metric": {
+          "type": "string"
+        },
+        "warmup": {
+          "type": "object"
+        },
+        "x_name": {
+          "type": "string"
+        },
+        "x_values": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "y_name": {
+          "type": "string"
+        },
+        "y_values": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        }
+      },
+      "required": [
+        "as_of",
+        "assumptions",
+        "base_case_value",
+        "evidence",
+        "grid",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "value_metric",
+        "warmup",
+        "x_name",
+        "x_values",
+        "y_name",
+        "y_values"
+      ],
+      "additionalProperties": false
+    },
+    "compute_sma": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "value": {
+          "type": "array",
+          "items": {
+            "type": [
+              "null",
+              "number"
+            ]
+          }
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "value",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "detect_red_flags": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "flags": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "null"
+        },
+        "input_length": {
+          "type": "null"
+        },
+        "input_start": {
+          "type": "null"
+        },
+        "params": {
+          "type": "object"
+        },
+        "thresholds": {
+          "type": "object"
+        },
+        "triggered_rules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "flags",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "thresholds",
+        "triggered_rules",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "detect_regime_slow": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "criteria": {
+          "type": "object"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "regime": {
+          "type": "string"
+        },
+        "triggered_count": {
+          "type": "integer"
+        },
+        "volatility_source": {
+          "type": "string"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "criteria",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "regime",
+        "triggered_count",
+        "volatility_source",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "detect_shock_fast": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "recommendation": {
+          "type": "object"
+        },
+        "shock_return": {
+          "type": "number"
+        },
+        "shock_triggered": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string"
+        },
+        "triggered": {
+          "type": "boolean"
+        },
+        "volatility_jump_ratio": {
+          "type": [
+            "null",
+            "number"
+          ]
+        },
+        "volatility_jump_triggered": {
+          "type": "boolean"
+        },
+        "volatility_source": {
+          "type": "string"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "recommendation",
+        "shock_return",
+        "shock_triggered",
+        "status",
+        "triggered",
+        "volatility_jump_ratio",
+        "volatility_jump_triggered",
+        "volatility_source",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "document_regime_defaults": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "calibration_note": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "tools": {
+          "type": "object"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "calibration_note",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "tools",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "estimate_dcf": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "assumptions": {
+          "type": "object"
+        },
+        "discount_rate": {
+          "type": "number"
+        },
+        "enterprise_value": {
+          "type": "number"
+        },
+        "equity_value": {
+          "type": "number"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "null"
+        },
+        "input_length": {
+          "type": "null"
+        },
+        "input_start": {
+          "type": "null"
+        },
+        "params": {
+          "type": "object"
+        },
+        "pv_explicit_fcf": {
+          "type": "number"
+        },
+        "pv_terminal_value": {
+          "type": "number"
+        },
+        "terminal_method": {
+          "type": "string"
+        },
+        "terminal_value": {
+          "type": "number"
+        },
+        "terminal_value_share": {
+          "type": "number"
+        },
+        "value_per_share": {
+          "type": "number"
+        },
+        "wacc_basis": {
+          "type": "string"
+        },
+        "wacc_breakdown": {
+          "type": "null"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "assumptions",
+        "discount_rate",
+        "enterprise_value",
+        "equity_value",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "pv_explicit_fcf",
+        "pv_terminal_value",
+        "terminal_method",
+        "terminal_value",
+        "terminal_value_share",
+        "value_per_share",
+        "wacc_basis",
+        "wacc_breakdown",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "estimate_ddm": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "assumptions": {
+          "type": "object"
+        },
+        "dividend_per_share": {
+          "type": "number"
+        },
+        "dividend_schedule": {
+          "type": "null"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "growth_rate": {
+          "type": "number"
+        },
+        "input_end": {
+          "type": "null"
+        },
+        "input_length": {
+          "type": "null"
+        },
+        "input_start": {
+          "type": "null"
+        },
+        "params": {
+          "type": "object"
+        },
+        "pv_explicit_dividends": {
+          "type": "null"
+        },
+        "pv_terminal_value": {
+          "type": "null"
+        },
+        "required_return": {
+          "type": "number"
+        },
+        "value_per_share": {
+          "type": "number"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "assumptions",
+        "dividend_per_share",
+        "dividend_schedule",
+        "evidence",
+        "growth_rate",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "pv_explicit_dividends",
+        "pv_terminal_value",
+        "required_return",
+        "value_per_share",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "estimate_monte_carlo": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "assumptions": {
+          "type": "object"
+        },
+        "base_value": {
+          "type": "number"
+        },
+        "base_value_source": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "horizon": {
+          "type": "integer"
+        },
+        "input_end": {
+          "type": "null"
+        },
+        "input_length": {
+          "type": "null"
+        },
+        "input_start": {
+          "type": "null"
+        },
+        "mean": {
+          "type": "number"
+        },
+        "n_simulations": {
+          "type": "integer"
+        },
+        "p25": {
+          "type": "number"
+        },
+        "p5": {
+          "type": "number"
+        },
+        "p50": {
+          "type": "number"
+        },
+        "p75": {
+          "type": "number"
+        },
+        "p95": {
+          "type": "number"
+        },
+        "params": {
+          "type": "object"
+        },
+        "percentile_levels": {
+          "type": "object"
+        },
+        "percentile_values": {
+          "type": "object"
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "std": {
+          "type": "number"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "assumptions",
+        "base_value",
+        "base_value_source",
+        "evidence",
+        "horizon",
+        "input_end",
+        "input_length",
+        "input_start",
+        "mean",
+        "n_simulations",
+        "p25",
+        "p5",
+        "p50",
+        "p75",
+        "p95",
+        "params",
+        "percentile_levels",
+        "percentile_values",
+        "seed",
+        "std",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "rank_factor_scores": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "n_dropped": {
+          "type": "integer"
+        },
+        "n_observations": {
+          "type": "integer"
+        },
+        "n_tie_groups": {
+          "type": "integer"
+        },
+        "n_ties": {
+          "type": "integer"
+        },
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "params": {
+          "type": "object"
+        },
+        "ranks": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "n_dropped",
+        "n_observations",
+        "n_tie_groups",
+        "n_ties",
+        "order",
+        "params",
+        "ranks",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "record_decision": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "db_path": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object",
+          "properties": {
+            "as_of": {
+              "type": "string"
+            },
+            "counts": {
+              "type": "object"
+            },
+            "created": {
+              "type": "boolean"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "decision_id": {
+              "type": "string"
+            },
+            "pack": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "revises": {
+              "type": "null"
+            },
+            "revision_seq": {
+              "type": "integer"
+            },
+            "skill": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "symbol": {
+              "type": "string"
+            },
+            "payload": {
+              "$ref": "https://finddatatech.cloud/schemas/rating.schema.json"
+            }
+          },
+          "required": [
+            "as_of",
+            "counts",
+            "created",
+            "created_at",
+            "decision_id",
+            "pack",
+            "reason",
+            "revises",
+            "revision_seq",
+            "skill",
+            "status",
+            "symbol"
+          ],
+          "additionalProperties": false
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "as_of",
+        "db_path",
+        "result",
+        "tool"
+      ],
+      "additionalProperties": false
+    },
+    "retrieve_decisions": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "db_path": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object",
+          "properties": {
+            "as_of": {
+              "type": "string"
+            },
+            "counts": {
+              "type": "object"
+            },
+            "cross_symbol": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "m_cross": {
+              "type": "integer"
+            },
+            "n_same": {
+              "type": "integer"
+            },
+            "pack": {
+              "type": "null"
+            },
+            "same_symbol": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "as_of": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "string"
+                  },
+                  "decision_id": {
+                    "type": "string"
+                  },
+                  "evidence": {
+                    "type": "array"
+                  },
+                  "pack": {
+                    "type": "string"
+                  },
+                  "payload": {
+                    "$ref": "https://finddatatech.cloud/schemas/rating.schema.json"
+                  },
+                  "revises": {
+                    "type": "null"
+                  },
+                  "revision_seq": {
+                    "type": "integer"
+                  },
+                  "settlement": {
+                    "type": "object"
+                  },
+                  "skill": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "symbol": {
+                    "type": "string"
+                  },
+                  "target_weights": {
+                    "anyOf": [
+                      {
+                        "$ref": "https://finddatatech.cloud/schemas/target-weights.schema.json"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "as_of",
+                  "created_at",
+                  "decision_id",
+                  "evidence",
+                  "pack",
+                  "payload",
+                  "revises",
+                  "revision_seq",
+                  "settlement",
+                  "skill",
+                  "status",
+                  "symbol",
+                  "target_weights"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "symbol": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "as_of",
+            "counts",
+            "cross_symbol",
+            "m_cross",
+            "n_same",
+            "pack",
+            "same_symbol",
+            "symbol"
+          ],
+          "additionalProperties": false
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "as_of",
+        "db_path",
+        "result",
+        "tool"
+      ],
+      "additionalProperties": false
+    },
+    "settle_decision": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "db_path": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "as_of",
+        "db_path",
+        "result",
+        "tool"
+      ],
+      "additionalProperties": false
+    },
+    "split_holdout": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "embargo": {
+          "type": "integer"
+        },
+        "embargo_dropped": {
+          "type": "integer"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "holdout_fraction": {
+          "type": "number"
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "n_test": {
+          "type": "integer"
+        },
+        "n_train": {
+          "type": "integer"
+        },
+        "params": {
+          "type": "object"
+        },
+        "point_count": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "null"
+        },
+        "test_end_date": {
+          "type": "string"
+        },
+        "test_end_idx": {
+          "type": "integer"
+        },
+        "test_size": {
+          "type": "integer"
+        },
+        "test_start_date": {
+          "type": "string"
+        },
+        "test_start_idx": {
+          "type": "integer"
+        },
+        "train_end_date": {
+          "type": "string"
+        },
+        "train_end_idx": {
+          "type": "integer"
+        },
+        "train_fraction": {
+          "type": "number"
+        },
+        "train_size": {
+          "type": "integer"
+        },
+        "train_start_date": {
+          "type": "string"
+        },
+        "train_start_idx": {
+          "type": "integer"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "embargo",
+        "embargo_dropped",
+        "evidence",
+        "holdout_fraction",
+        "input_end",
+        "input_length",
+        "input_start",
+        "n_test",
+        "n_train",
+        "params",
+        "point_count",
+        "reason",
+        "test_end_date",
+        "test_end_idx",
+        "test_size",
+        "test_start_date",
+        "test_start_idx",
+        "train_end_date",
+        "train_end_idx",
+        "train_fraction",
+        "train_size",
+        "train_start_date",
+        "train_start_idx",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "split_walk_forward_windows": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "coverage": {
+          "type": "integer"
+        },
+        "coverage_end": {
+          "type": "string"
+        },
+        "coverage_ratio": {
+          "type": "number"
+        },
+        "coverage_start": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "invariant": {
+          "type": "string"
+        },
+        "n_windows": {
+          "type": "integer"
+        },
+        "params": {
+          "type": "object"
+        },
+        "point_count": {
+          "type": "integer"
+        },
+        "range_end": {
+          "type": "string"
+        },
+        "range_start": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "null"
+        },
+        "step": {
+          "type": "integer"
+        },
+        "test_window": {
+          "type": "integer"
+        },
+        "train_window": {
+          "type": "integer"
+        },
+        "unassigned_tail": {
+          "type": "integer"
+        },
+        "warmup": {
+          "type": "object"
+        },
+        "window_count": {
+          "type": "integer"
+        },
+        "windows": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": [
+        "as_of",
+        "coverage",
+        "coverage_end",
+        "coverage_ratio",
+        "coverage_start",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "invariant",
+        "n_windows",
+        "params",
+        "point_count",
+        "range_end",
+        "range_start",
+        "reason",
+        "step",
+        "test_window",
+        "train_window",
+        "unassigned_tail",
+        "warmup",
+        "window_count",
+        "windows"
+      ],
+      "additionalProperties": false
+    },
+    "summarize_beta": {
+      "type": "object",
+      "properties": {
+        "alpha": {
+          "type": "null"
+        },
+        "as_of": {
+          "type": "string"
+        },
+        "benchmark_variance": {
+          "type": "null"
+        },
+        "beta": {
+          "type": "null"
+        },
+        "correlation": {
+          "type": "null"
+        },
+        "covariance": {
+          "type": "null"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "observations": {
+          "type": "integer"
+        },
+        "params": {
+          "type": "object"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "alpha",
+        "as_of",
+        "benchmark_variance",
+        "beta",
+        "correlation",
+        "covariance",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "observations",
+        "params",
+        "reason",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "summarize_calmar": {
+      "type": "object",
+      "properties": {
+        "annualized_return": {
+          "type": "number"
+        },
+        "as_of": {
+          "type": "string"
+        },
+        "calmar": {
+          "type": "number"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "max_drawdown": {
+          "type": "number"
+        },
+        "params": {
+          "type": "object"
+        },
+        "periods_per_year": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "null"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "annualized_return",
+        "as_of",
+        "calmar",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "max_drawdown",
+        "params",
+        "periods_per_year",
+        "reason",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "summarize_concentration": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "cash_weight": {
+          "type": "number"
+        },
+        "effective_n": {
+          "type": "number"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "gross_exposure": {
+          "type": "number"
+        },
+        "hhi": {
+          "type": "number"
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "observation_date": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "reason": {
+          "type": "null"
+        },
+        "top_n_share": {
+          "type": "number"
+        },
+        "top_n_used": {
+          "type": "integer"
+        },
+        "warmup": {
+          "type": "object"
+        },
+        "weight_count": {
+          "type": "integer"
+        },
+        "weights_long_only": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "as_of",
+        "cash_weight",
+        "effective_n",
+        "evidence",
+        "gross_exposure",
+        "hhi",
+        "input_end",
+        "input_length",
+        "input_start",
+        "observation_date",
+        "params",
+        "reason",
+        "top_n_share",
+        "top_n_used",
+        "warmup",
+        "weight_count",
+        "weights_long_only"
+      ],
+      "additionalProperties": false
+    },
+    "summarize_drawdown": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "drawdown_series": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "duration_days": {
+          "type": "integer"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "max_drawdown": {
+          "type": "number"
+        },
+        "params": {
+          "type": "object"
+        },
+        "peak_date": {
+          "type": "string"
+        },
+        "peak_value": {
+          "type": "number"
+        },
+        "reason": {
+          "type": "null"
+        },
+        "recovery_date": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "trough_date": {
+          "type": "string"
+        },
+        "trough_value": {
+          "type": "number"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "drawdown_series",
+        "duration_days",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "max_drawdown",
+        "params",
+        "peak_date",
+        "peak_value",
+        "reason",
+        "recovery_date",
+        "trough_date",
+        "trough_value",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "summarize_information_ratio": {
+      "type": "object",
+      "properties": {
+        "active_return_volatility": {
+          "type": "null"
+        },
+        "annualization_factor": {
+          "type": "number"
+        },
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "information_ratio": {
+          "type": "null"
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "mean_active_return": {
+          "type": "null"
+        },
+        "observations": {
+          "type": "integer"
+        },
+        "params": {
+          "type": "object"
+        },
+        "periods_per_year": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "tracking_error": {
+          "type": "null"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "active_return_volatility",
+        "annualization_factor",
+        "as_of",
+        "evidence",
+        "information_ratio",
+        "input_end",
+        "input_length",
+        "input_start",
+        "mean_active_return",
+        "observations",
+        "params",
+        "periods_per_year",
+        "reason",
+        "tracking_error",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "summarize_pack_performance": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "db_path": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "as_of",
+        "db_path",
+        "result",
+        "tool"
+      ],
+      "additionalProperties": false
+    },
+    "summarize_return": {
+      "type": "object",
+      "properties": {
+        "annualized_return": {
+          "type": "number"
+        },
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "intervals": {
+          "type": "integer"
+        },
+        "params": {
+          "type": "object"
+        },
+        "periods_per_year": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "null"
+        },
+        "total_return": {
+          "type": "number"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "annualized_return",
+        "as_of",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "intervals",
+        "params",
+        "periods_per_year",
+        "reason",
+        "total_return",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "summarize_sharpe": {
+      "type": "object",
+      "properties": {
+        "annualization_factor": {
+          "type": "number"
+        },
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "excess_volatility": {
+          "type": "number"
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "mean_excess_return": {
+          "type": "number"
+        },
+        "observations": {
+          "type": "integer"
+        },
+        "params": {
+          "type": "object"
+        },
+        "periods_per_year": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "null"
+        },
+        "risk_free": {
+          "type": "number"
+        },
+        "sharpe": {
+          "type": "number"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "annualization_factor",
+        "as_of",
+        "evidence",
+        "excess_volatility",
+        "input_end",
+        "input_length",
+        "input_start",
+        "mean_excess_return",
+        "observations",
+        "params",
+        "periods_per_year",
+        "reason",
+        "risk_free",
+        "sharpe",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "summarize_sortino": {
+      "type": "object",
+      "properties": {
+        "annualization_factor": {
+          "type": "number"
+        },
+        "as_of": {
+          "type": "string"
+        },
+        "downside_deviation": {
+          "type": "number"
+        },
+        "downside_observations": {
+          "type": "integer"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "mean_excess_return": {
+          "type": "number"
+        },
+        "observations": {
+          "type": "integer"
+        },
+        "params": {
+          "type": "object"
+        },
+        "periods_per_year": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "null"
+        },
+        "risk_free": {
+          "type": "number"
+        },
+        "sortino": {
+          "type": "number"
+        },
+        "target": {
+          "type": "number"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "annualization_factor",
+        "as_of",
+        "downside_deviation",
+        "downside_observations",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "mean_excess_return",
+        "observations",
+        "params",
+        "periods_per_year",
+        "reason",
+        "risk_free",
+        "sortino",
+        "target",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "summarize_turnover": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "baseline": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "position_count": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "null"
+        },
+        "turnover": {
+          "type": "number"
+        },
+        "turnover_basis": {
+          "type": "string"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "as_of",
+        "baseline",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "params",
+        "position_count",
+        "reason",
+        "turnover",
+        "turnover_basis",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "summarize_volatility": {
+      "type": "object",
+      "properties": {
+        "annualization_factor": {
+          "type": "number"
+        },
+        "as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "observations": {
+          "type": "integer"
+        },
+        "params": {
+          "type": "object"
+        },
+        "per_period_volatility": {
+          "type": "number"
+        },
+        "periods_per_year": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "null"
+        },
+        "volatility": {
+          "type": "number"
+        },
+        "warmup": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "annualization_factor",
+        "as_of",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "observations",
+        "params",
+        "per_period_volatility",
+        "periods_per_year",
+        "reason",
+        "volatility",
+        "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "validate_no_lookahead": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "checked_points": {
+          "type": "integer"
+        },
+        "checked_windows": {
+          "type": "integer"
+        },
+        "declared_as_of": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "first_date": {
+          "type": "string"
+        },
+        "first_future_date": {
+          "type": "null"
+        },
+        "first_future_index": {
+          "type": "null"
+        },
+        "future_points": {
+          "type": "integer"
+        },
+        "headroom_days": {
+          "type": "integer"
+        },
+        "input_end": {
+          "type": "string"
+        },
+        "input_length": {
+          "type": "integer"
+        },
+        "input_start": {
+          "type": "string"
+        },
+        "is_monotonic": {
+          "type": "boolean"
+        },
+        "last_date": {
+          "type": "string"
+        },
+        "lookahead_points": {
+          "type": "integer"
+        },
+        "missing_points": {
+          "type": "integer"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "params": {
+          "type": "object"
+        },
+        "point_count": {
+          "type": "integer"
+        },
+        "points_checked": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "null"
+        },
+        "requested_as_of": {
+          "type": "string"
+        },
+        "span_days": {
+          "type": "integer"
+        },
+        "values_provided": {
+          "type": "boolean"
+        },
+        "warmup": {
+          "type": "object"
+        },
+        "window_invariant": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "as_of",
+        "checked_points",
+        "checked_windows",
+        "declared_as_of",
+        "evidence",
+        "first_date",
+        "first_future_date",
+        "first_future_index",
+        "future_points",
+        "headroom_days",
+        "input_end",
+        "input_length",
+        "input_start",
+        "is_monotonic",
+        "last_date",
+        "lookahead_points",
+        "missing_points",
+        "ok",
+        "params",
+        "point_count",
+        "points_checked",
+        "reason",
+        "requested_as_of",
+        "span_days",
+        "values_provided",
+        "warmup",
+        "window_invariant"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "undeclared": []
+}

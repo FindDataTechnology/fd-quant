@@ -26,6 +26,7 @@ import sys
 
 from fastmcp import FastMCP
 
+from .output_schemas import output_schema_for
 from .surface import all_surface_tools, missing_families
 
 SERVER_NAME = "fd-quant"
@@ -58,7 +59,8 @@ def build_server() -> FastMCP:
 
     for spec in all_surface_tools():
         app.tool(spec.fn, name=spec.name, description=spec.doc,
-                 annotations=spec.tool_annotations)
+                 annotations=spec.tool_annotations,
+                 output_schema=output_schema_for(spec.name))
 
     @app.custom_route("/health", methods=["GET"])
     async def health(_request):  # noqa: ANN001 — FastMCP 传 Request，此处不用

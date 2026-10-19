@@ -87,6 +87,9 @@ def build_manifest() -> dict:
         )
 
     total = len(all_surface_tools())
+    from fd_quant.output_schemas import load as _load_output_schemas, undeclared
+
+    declared_outputs = sorted(_load_output_schemas()["tools"])
     return {
         "schema": "mcp-tool-surface/v1",
         "server": SERVER_NAME,
@@ -100,6 +103,16 @@ def build_manifest() -> dict:
         # 就等于给协议层属性造了第二个事实源，两边必然漂。
         "tool_annotations": {
             spec.name: dict(spec.tool_annotations) for spec in all_surface_tools()
+        },
+        # 输出结构同样派生（mcp-result-contract）：`undeclared` 显式列出未声明的
+        # 工具，使"没有声明"这件事在清单里可见，而不是静默空缺。
+        "output_structure": {
+            "declared": declared_outputs,
+            "undeclared": undeclared(),
+            "source": "schemas/outputs.json（由 scripts/gen_output_schemas.py 从运行时实测生成）",
+            "note": "required = 多组输入下键集合的交集；类型取并集（null 是"
+                    "「该值不存在」的正式表达）；payload/target_weights 引用契约真源 "
+                    "schemas/rating.schema.json 与 target-weights.schema.json。",
         },
         "tool_groups": groups,
         "registry": {

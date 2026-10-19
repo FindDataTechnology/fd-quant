@@ -23,5 +23,12 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["fd_quant*"]
 
+# 输出结构声明与契约 schema 是**运行时工件**：server 启动时读它们挂到
+# tools/list 的 outputSchema 上。不随包分发的话，装出来的 wheel 会退化成
+# "所有工具未声明输出结构"，而开发机上一切正常——这种只在发布后出现的差异
+# 最难查。故包内保留一份副本（仓根 schemas/ 是权威副本，两者由测试钉住一致）。
+[tool.setuptools.package-data]
+fd_quant = ["schemas/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

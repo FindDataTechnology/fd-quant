@@ -173,6 +173,52 @@ def check_annotations(m: dict) -> list[str]:
     return problems
 
 
+def check_output_structure(m: dict) -> list[str]:
+    """输出结构声明（mcp-result-contract）：无静默空缺。
+
+    三件事必须成立：
+    1. 每个已上牌工具**要么**有输出结构、**要么**在 `undeclared` 里显式登记；
+    2. 登记与运行时一致（运行时有 output_schema 的才可算作 declared）；
+    3. `schemas/outputs.json` 与运行时无漂移（生成器视角）。
+    """
+    block = m.get("output_structure")
+    if not isinstance(block, dict):
+        return ["manifest 缺 output_structure（输出结构状态须显式可见）"]
+    declared = set(block.get("declared") or [])
+    undeclared = set(block.get("undeclared") or [])
+    man_tools = set(manifest_tools(m))
+    problems: list[str] = []
+
+    both = sorted(declared & undeclared)
+    if both:
+        problems.append(f"同时出现在 declared 与 undeclared：{both}")
+    silent = sorted(man_tools - declared - undeclared)
+    if silent:
+        problems.append(f"既未声明也未登记为未声明（静默空缺）：{silent}")
+    stray = sorted((declared | undeclared) - man_tools)
+    if stray:
+        problems.append(f"output_structure 登记了未上牌的工具：{stray}")
+
+    # 与运行时对齐：声明了就必须真的挂上 output_schema
+    runtime_has = runtime_output_schema_tools()
+    claimed_but_absent = sorted(declared - runtime_has)
+    if claimed_but_absent:
+        problems.append(f"manifest 声称已声明，运行时却无 output_schema：{claimed_but_absent}")
+    present_but_unlisted = sorted(runtime_has - declared)
+    if present_but_unlisted:
+        problems.append(f"运行时有 output_schema 但 manifest 未列入 declared：{present_but_unlisted}")
+    return problems
+
+
+def runtime_output_schema_tools() -> set[str]:
+    sys.path.insert(0, str(REPO))
+    import asyncio
+
+    from fd_quant.server import app
+
+    return {t.name for t in asyncio.run(app._list_tools()) if getattr(t, "output_schema", None)}
+
+
 def _iter_consumer_files(target: Path) -> list[Path]:
     if target.is_file():
         return [target]
@@ -237,6 +283,7 @@ def main() -> int:
     problems = check_shape(m)
     problems += check_runtime_agreement(m)
     problems += check_annotations(m)
+    problems += check_output_structure(m)
     if args.consumers:
         problems += check_consumers(m, args.consumers)
     problems += check_unsurfaced_ok()

@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://finddatatech.cloud/schemas/rating.schema.json",
+  "title": "Rating",
+  "description": "判定契约：一次对单一标的的方向性判断。数值字段一律引用 evidence（每个数字可追溯到出处）。扣值不扣结论——price_target 可为 null 而与 side 并存；side=review 表示无法形成判定，此时 price_target 与 conviction 必须为 null，且不存在任何把它静默改写为 hold 的路径。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "as_of", "subject", "side", "basis", "evidence", "producer"],
+  "properties": {
+    "schema_version": {
+      "description": "契约版本。仅支持 \"1\"；其他值一律拒绝（版本演进必须显式）。",
+      "const": "1"
+    },
+    "as_of": {
+      "description": "判定所依据的信息截止日（ISO 日期，YYYY-MM-DD）。此后的数据一律不得进入本判定。",
+      "type": "string",
+      "format": "date"
+    },
+    "subject": {
+      "description": "被判定标的的标识（如 600519.SS / AAPL / 000001.SZ）。",
+      "type": "string",
+      "minLength": 1
+    },
+    "side": {
+      "description": "方向判定。review 为显式态：表示无法形成判定（证据不足或输出不可解析），不得被静默降级为 hold。",
+      "enum": ["strong_buy", "buy", "hold", "sell", "strong_sell", "review"]
+    },
+    "conviction": {
+      "description": "判定强度 0..1。side=review 时必须为 null。",
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "price_target": {
+      "description": "目标价。可为 null 而与非 review 的 side 并存（扣值不扣结论：方法分歧、价格通道不可用或输入不足时保留方向判定，不给点位）。非 null 时必须有可解的 evidence 引用。",
+      "type": ["number", "null"]
+    },
+    "target_evidence_ids": {
+      "description": "支撑 price_target 的 evidence id 列表。price_target 非 null 时须非空且每个 id 可解。",
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "default": []
+    },
+    "basis": {
+      "description": "判定的理由（非空）。",
+      "type": "string",
+      "minLength": 1
+    },
+    "time_horizon": {
+      "description": "判定的时间范围（如 \"6-12 个月\"）。",
+      "type": ["string", "null"]
+    },
+    "evidence": {
+      "description": "证据数组。每个数值声明都应有一条对应 evidence；evidence_id 在实例内唯一。",
+      "type": "array",
+      "items": {"$ref": "#/$defs/evidence"}
+    },
+    "producer": {"$ref": "#/$defs/producer"}
+  },
+  "allOf": [
+    {
+      "description": "review 是显式态：不带强度也不带点位。",
+      "if": {"properties": {"side": {"const": "review"}}, "required": ["side"]},
+      "then": {
+        "properties": {
+          "price_target": {"type": "null"},
+          "conviction": {"type": "null"}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "evidence": {
+      "description": "单条证据：值、单位、期别与来源四要素 + 稳定句柄与人类标签。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_id", "label", "value", "unit", "as_of", "source"],
+      "properties": {
+        "evidence_id": {"type": "string", "minLength": 1},
+        "label": {"type": "string", "minLength": 1},
+        "value": {"type": ["number", "string", "null"]},
+        "unit": {"type": ["string", "null"]},
+        "as_of": {"type": "string", "format": "date"},
+        "source": {
+          "description": "数据来源标识（工具名/数据集/文件），如 fd-quant:dcf 或 gta_panel.revenue。",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "producer": {
+      "description": "产出方：pack 与 skill 决定归因（账本据此聚合\"哪个模式更准\"），run_id 可选。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pack", "skill"],
+      "properties": {
+        "pack": {"type": "string", "minLength": 1},
+        "skill": {"type": "string", "minLength": 1},
+        "run_id": {"type": ["string", "null"]}
+      }
+    }
+  }
+}
