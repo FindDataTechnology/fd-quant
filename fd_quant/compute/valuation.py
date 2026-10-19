@@ -828,6 +828,15 @@ def estimate_monte_carlo(
     compounded = np.cumprod(factors_path, axis=1)[:, -1]  # 每行顺序扫描（非成对归约）
     values = base * compounded / ((1.0 + rate) ** periods)
 
+    # 负尾部标注（quant-compute-plane）：正态增长路径可能让终值为负，而"负的企业
+    # 价值"在多数估值语境下无意义——但那是**模型假设**的后果，不是计算错误，故不
+    # 拒绝也不裁剪，而是显式标出并给出占比与最左分位，让调用方自己判断该假设是否
+    # 可接受。静默返回负值带会让下游把 -11 当成"估值 11"来用。
+    negative_mask = values < 0.0
+    n_negative = int(np.count_nonzero(negative_mask))
+    tail_negative = n_negative > 0
+    tail_negative_share = (n_negative / n_sims) if n_sims else 0.0
+
     band = np.percentile(values, [level * 100.0 for level in levels], method="linear")
     percentile_values = {labels[i]: float(band[i]) for i in range(len(labels))}
     mean_value = _kahan_mean(values)
@@ -859,12 +868,23 @@ def estimate_monte_carlo(
         b.add(label, percentile_values[label], unit="currency", params=src)
     b.add("mean", mean_value, unit="currency", params=src)
     b.add("std", std_value, unit="currency", params=src)
+    if tail_negative:
+        b.add("negative tail share", tail_negative_share, unit="fraction", params=src)
 
     payload = {
         "percentile_values": percentile_values,
         "percentile_levels": {label: level for label, level in zip(labels, levels)},
         "mean": mean_value,
         "std": std_value,
+        "tail_negative": tail_negative,
+        "tail_negative_share": tail_negative_share,
+        "tail_negative_note": (
+            f"{n_negative}/{n_sims} 条路径的终值为负（占 {tail_negative_share:.1%}），"
+            "最低分位 " + labels[0] + f" = {percentile_values[labels[0]]:.6g}。"
+            "正态增长假设下终值可以取负，而负的企业价值在多数估值语境下无意义："
+            "这是**假设**的后果而非计算错误，故如实标注而不裁剪。若要排除负值，"
+            "请改用对数正态增长或收窄 growth_std。"
+        ) if tail_negative else None,
         "n_simulations": n_sims,
         "seed": seed,
         "horizon": periods,

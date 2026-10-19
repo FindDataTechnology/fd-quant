@@ -449,16 +449,25 @@ def compute_kdj(
         hi, lo = float(np.max(hh)), float(np.min(ll))
         rsv[i] = 50.0 if hi == lo else (float(c.values[i]) - lo) / (hi - lo) * 100.0
 
+    # KDJ 是**递推**指标（K/D 由前值与当期 RSV 平滑而来），故自首个缺失起其后
+    # 全为 null——与模块头声明的递推类纪律一致（EMA/RSI/ATR/DMI/ADX 同）。
+    # 原实现在 rsv 有洞时让 state 停住而后继续，等于用一个旧状态填补了缺失，
+    # 正是"跳过/填充"那种替调用方发明数据点的行为，且与本模块自述的纪律矛盾。
     k = np.full(n, np.nan)
     d = np.full(n, np.nan)
     k_prev, d_prev = 50.0, 50.0
+    started = False
     for i in range(n):
         if np.isnan(rsv[i]):
+            # warmup 区（前 n_period-1 位）的 null 是**设计如此**，不是污染；
+            # 只有"已开始输出后又出现缺失"才中止后续（递推状态已不可信）。
+            if started:
+                break
             continue
+        started = True
         k_prev = ((kp - 1) * k_prev + rsv[i]) / kp
         d_prev = ((dp - 1) * d_prev + k_prev) / dp
         k[i], d[i] = k_prev, d_prev
-    # NaN 之后的递推：rsv 有洞时 state 停住，其后继续（state 不因缺失被污染）
     j = 3.0 * k - 2.0 * d
 
     params = {"n_period": npd, "k_period": kp, "d_period": dp}
@@ -496,10 +505,13 @@ def compute_obv(
     if n:
         out[0] = 0.0
         running = 0.0
+        # OBV 是**累加**指标（running 由前值与当期量累加），故自首个缺失起其后
+        # 全为 null——与模块头声明的递推类纪律一致。原实现在缺失处跳过而
+        # `running` 保持，其后继续累加，等于"这一天的量没进累计但序列仍连续"：
+        # 调用方读到的是看似完整、实则少了一段量能的曲线，且无从察觉。
         for i in range(1, n):
             if np.isnan(c.values[i]) or np.isnan(c.values[i - 1]) or np.isnan(vol.values[i]):
-                out[i] = np.nan
-                continue
+                break
             if c.values[i] > c.values[i - 1]:
                 running += float(vol.values[i])
             elif c.values[i] < c.values[i - 1]:

@@ -246,6 +246,86 @@ def _prep_positive_series(
     return s
 
 
+
+#: 频率 → 每年期数的标准映射。用于**校验**调用方给的 periods_per_year 是否与
+#: 日期轴一致，不用于静默推断（见 _frequency_check）。
+_STANDARD_PERIODS_PER_YEAR = {"daily": 252, "weekly": 52, "monthly": 12, "quarterly": 4, "annual": 1}
+
+
+def _infer_frequency(dates: Sequence[str]) -> tuple[Optional[str], Optional[float]]:
+    """从日期轴的中位间隔猜频率；样本不足（<3 点）时返回 (None, None)。
+
+    **只用于给出提示，不用于改写调用方的 periods_per_year**：猜错频率会把年化
+    结果悄悄改掉，那比"没验证"更坏——调用方以为自己算的是日频年化，实际拿到
+    月频的。
+    """
+    import datetime as _dt
+
+    if len(dates) < 3:
+        return None, None
+    parsed = []
+    for d in dates:
+        try:
+            parsed.append(_dt.date.fromisoformat(d))
+        except (TypeError, ValueError):
+            return None, None
+    gaps = [(parsed[i + 1] - parsed[i]).days for i in range(len(parsed) - 1)]
+    gaps = [g for g in gaps if g > 0]
+    if not gaps:
+        return None, None
+    gaps.sort()
+    med = gaps[len(gaps) // 2]
+    if med <= 4:
+        return "daily", med
+    if med <= 10:
+        return "weekly", med
+    if med <= 45:
+        return "monthly", med
+    if med <= 135:
+        return "quarterly", med
+    return "annual", med
+
+
+def _frequency_check(
+    dates: Sequence[str], ppy: int, declared: Optional[str], tool: str
+) -> dict:
+    """年化频率声明（quant-compute-plane）：未给 frequency 时标注"未经验证"。
+
+    **为什么必须标注**：默认的 252 是**交易日**口径。若调用方传的是自然日序列
+    （含周末与长假），真实每年期数接近 365，按 252 年化会系统性低估年化收益与
+    波动——偏差不报错、不留痕，只有下游对比时才发现数字对不上。
+
+    `declared` 非空时按标准映射**校验**（不符即报 ComputeError 点名两个数），
+    空则标注 unverified 并附推断出的频率供参考。
+    """
+    if declared is not None:
+        key = str(declared).strip().lower()
+        if key not in _STANDARD_PERIODS_PER_YEAR:
+            raise ComputeError(
+                f"{tool}: frequency must be one of "
+                f"{sorted(_STANDARD_PERIODS_PER_YEAR)}, got {declared!r}")
+        expected = _STANDARD_PERIODS_PER_YEAR[key]
+        if expected != int(ppy):
+            raise ComputeError(
+                f"{tool}: periods_per_year={ppy} contradicts frequency={declared!r} "
+                f"(expected {expected}); either fix periods_per_year or drop "
+                f"frequency to accept the unverified default")
+        return {
+            "frequency": key,
+            "frequency_verified": True,
+            "frequency_note": None,
+        }
+    guess, med_gap = _infer_frequency(dates)
+    note = (
+        "频率未经验证：periods_per_year 取调用方传入值（默认 252 = 交易日口径），"
+        "本层未校验它与日期轴一致。若序列是自然日（含周末与长假），真实每年期数"
+        "接近 365，按 252 年化会系统性低估年化收益与波动。传 frequency="
+        "(daily|weekly|monthly|quarterly|annual) 可启用校验。"
+    )
+    if guess is not None:
+        note += f" 由日期轴中位间隔 {med_gap:g} 天推断，序列看起来像 {guess} 频。"
+    return {"frequency": None, "frequency_verified": False, "frequency_note": note}
+
 def _annualize(start: float, end: float, intervals: int, ppy: int) -> tuple[float, Optional[float], Optional[str]]:
     """总收益与几何年化收益：`(end/start) ** (ppy/intervals) - 1`。
 
@@ -383,6 +463,7 @@ def summarize_return(
     values: Sequence[Optional[float]],
     as_of: str,
     periods_per_year: int = 252,
+    frequency: Optional[str] = None,
 ) -> dict:
     """年化收益（几何）：总收益 = 末值/首值 - 1；年化 = (末值/首值)^(periods_per_year/期数) - 1。
 
@@ -395,6 +476,7 @@ def summarize_return(
     """
     a = check_as_of(as_of)
     ppy = check_positive_window(periods_per_year, name="periods_per_year")
+    freq = _frequency_check(dates, ppy, frequency, "summarize_return")
     s = _prep_positive_series(dates, values, a, name="values")
     n = len(s)
     if n < 2:
@@ -416,6 +498,8 @@ def summarize_return(
             "annualized_return": None,
             "intervals": n - 1,
             "periods_per_year": ppy,
+        **freq,
+            **freq,
             "reason": reason,
             "params": params,
             "warmup": _warmup({"total_return": None, "annualized_return": None}),
@@ -429,6 +513,7 @@ def summarize_return(
         "annualized_return": _num(ann),
         "intervals": n - 1,
         "periods_per_year": ppy,
+        **freq,
         "reason": reason,
         "params": params,
         "warmup": _warmup({"total_return": total, "annualized_return": ann}),
@@ -440,6 +525,7 @@ def summarize_volatility(
     values: Sequence[Optional[float]],
     as_of: str,
     periods_per_year: int = 252,
+    frequency: Optional[str] = None,
 ) -> dict:
     """年化波动：权益序列简单收益的样本标准差 (ddof=1) × sqrt(periods_per_year)。
 
@@ -452,6 +538,7 @@ def summarize_volatility(
     """
     a = check_as_of(as_of)
     ppy = check_positive_window(periods_per_year, name="periods_per_year")
+    freq = _frequency_check(dates, ppy, frequency, "summarize_volatility")
     s = _prep_positive_series(dates, values, a, name="values")
     n = len(s)
     if n < 3:
@@ -472,6 +559,8 @@ def summarize_volatility(
             "per_period_volatility": None,
             "annualization_factor": factor,
             "periods_per_year": ppy,
+        **freq,
+            **freq,
             "observations": n - 1,
             "reason": reason,
             "params": params,
@@ -488,6 +577,7 @@ def summarize_volatility(
         "per_period_volatility": _num(per_period),
         "annualization_factor": factor,
         "periods_per_year": ppy,
+        **freq,
         "observations": n - 1,
         "reason": None,
         "params": params,
@@ -569,6 +659,7 @@ def summarize_calmar(
     values: Sequence[Optional[float]],
     as_of: str,
     periods_per_year: int = 252,
+    frequency: Optional[str] = None,
 ) -> dict:
     """Calmar 比率 = 年化收益 / |最大回撤|（回撤为 0 时输出 null + 原因，绝不返回 inf）。
 
@@ -581,6 +672,7 @@ def summarize_calmar(
     """
     a = check_as_of(as_of)
     ppy = check_positive_window(periods_per_year, name="periods_per_year")
+    freq = _frequency_check(dates, ppy, frequency, "summarize_calmar")
     s = _prep_positive_series(dates, values, a, name="values")
     n = len(s)
     if n < 2:
@@ -599,6 +691,8 @@ def summarize_calmar(
             "annualized_return": None,
             "max_drawdown": None,
             "periods_per_year": ppy,
+        **freq,
+            **freq,
             "reason": reason,
             "params": params,
             "warmup": _warmup({"calmar": None, "annualized_return": None}),
@@ -629,6 +723,7 @@ def summarize_calmar(
         "annualized_return": _num(ann),
         "max_drawdown": _num(max_dd),
         "periods_per_year": ppy,
+        **freq,
         "reason": reason,
         "params": params,
         "warmup": _warmup({"calmar": calmar, "annualized_return": ann, "max_drawdown": max_dd}),
@@ -643,6 +738,7 @@ def summarize_sharpe(
     values: Sequence[Optional[float]],
     as_of: str,
     periods_per_year: int = 252,
+    frequency: Optional[str] = None,
     risk_free: float = 0.0,
 ) -> dict:
     """Sharpe 比率：每期超额收益均值 / 每期超额收益样本标准差 × sqrt(periods_per_year)。
@@ -658,6 +754,7 @@ def summarize_sharpe(
     """
     a = check_as_of(as_of)
     ppy = check_positive_window(periods_per_year, name="periods_per_year")
+    freq = _frequency_check(dates, ppy, frequency, "summarize_sharpe")
     rf = check_finite(risk_free, name="risk_free")
     s = _prep_positive_series(dates, values, a, name="values")
     n = len(s)
@@ -678,6 +775,8 @@ def summarize_sharpe(
             "sharpe": None,
             "risk_free": rf,
             "periods_per_year": ppy,
+        **freq,
+            **freq,
             "annualization_factor": factor,
             "mean_excess_return": None,
             "excess_volatility": None,
@@ -710,6 +809,7 @@ def summarize_sharpe(
         "sharpe": _num(sharpe),
         "risk_free": rf,
         "periods_per_year": ppy,
+        **freq,
         "annualization_factor": factor,
         "mean_excess_return": _num(mean_excess),
         "excess_volatility": _num(vol),
@@ -725,6 +825,7 @@ def summarize_sortino(
     values: Sequence[Optional[float]],
     as_of: str,
     periods_per_year: int = 252,
+    frequency: Optional[str] = None,
     risk_free: float = 0.0,
     target: float = 0.0,
 ) -> dict:
@@ -743,6 +844,7 @@ def summarize_sortino(
     """
     a = check_as_of(as_of)
     ppy = check_positive_window(periods_per_year, name="periods_per_year")
+    freq = _frequency_check(dates, ppy, frequency, "summarize_sortino")
     rf = check_finite(risk_free, name="risk_free")
     tgt = check_finite(target, name="target")
     s = _prep_positive_series(dates, values, a, name="values")
@@ -765,6 +867,8 @@ def summarize_sortino(
             "risk_free": rf,
             "target": tgt,
             "periods_per_year": ppy,
+        **freq,
+            **freq,
             "annualization_factor": factor,
             "mean_excess_return": None,
             "downside_deviation": None,
@@ -809,6 +913,7 @@ def summarize_sortino(
         "risk_free": rf,
         "target": tgt,
         "periods_per_year": ppy,
+        **freq,
         "annualization_factor": factor,
         "mean_excess_return": _num(mean_excess),
         "downside_deviation": _num(downside_dev),
@@ -829,6 +934,7 @@ def summarize_information_ratio(
     benchmark: Sequence[Optional[float]],
     as_of: str,
     periods_per_year: int = 252,
+    frequency: Optional[str] = None,
 ) -> dict:
     """信息比 IR = 主动收益均值 / 主动收益标准差 × sqrt(periods_per_year)，同调返回跟踪误差 TE。
 
@@ -844,6 +950,7 @@ def summarize_information_ratio(
     """
     a = check_as_of(as_of)
     ppy = check_positive_window(periods_per_year, name="periods_per_year")
+    freq = _frequency_check(dates, ppy, frequency, "summarize_information_ratio")
     p = _prep_positive_series(dates, values, a, name="values")
     bm = check_series(dates, benchmark, as_of=a, name="benchmark")
     n = len(p)
@@ -866,6 +973,8 @@ def summarize_information_ratio(
             "information_ratio": None,
             "tracking_error": None,
             "periods_per_year": ppy,
+        **freq,
+            **freq,
             "annualization_factor": factor,
             "mean_active_return": None,
             "active_return_volatility": None,
@@ -903,6 +1012,7 @@ def summarize_information_ratio(
         "information_ratio": _num(ir),
         "tracking_error": _num(te),
         "periods_per_year": ppy,
+        **freq,
         "annualization_factor": factor,
         "mean_active_return": _num(mean_active),
         "active_return_volatility": _num(vol_active),

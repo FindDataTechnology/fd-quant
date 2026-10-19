@@ -2030,6 +2030,15 @@
         "std": {
           "type": "number"
         },
+        "tail_negative": {
+          "type": "boolean"
+        },
+        "tail_negative_note": {
+          "type": "null"
+        },
+        "tail_negative_share": {
+          "type": "number"
+        },
         "warmup": {
           "type": "object"
         }
@@ -2056,6 +2065,9 @@
         "percentile_values",
         "seed",
         "std",
+        "tail_negative",
+        "tail_negative_note",
+        "tail_negative_share",
         "warmup"
       ],
       "additionalProperties": false
@@ -2666,6 +2678,15 @@
             "type": "object"
           }
         },
+        "frequency": {
+          "type": "null"
+        },
+        "frequency_note": {
+          "type": "string"
+        },
+        "frequency_verified": {
+          "type": "boolean"
+        },
         "input_end": {
           "type": "string"
         },
@@ -2696,6 +2717,9 @@
         "as_of",
         "calmar",
         "evidence",
+        "frequency",
+        "frequency_note",
+        "frequency_verified",
         "input_end",
         "input_length",
         "input_start",
@@ -2885,6 +2909,15 @@
             "type": "object"
           }
         },
+        "frequency": {
+          "type": "null"
+        },
+        "frequency_note": {
+          "type": "string"
+        },
+        "frequency_verified": {
+          "type": "boolean"
+        },
         "information_ratio": {
           "type": "null"
         },
@@ -2924,6 +2957,9 @@
         "annualization_factor",
         "as_of",
         "evidence",
+        "frequency",
+        "frequency_note",
+        "frequency_verified",
         "information_ratio",
         "input_end",
         "input_length",
@@ -2977,6 +3013,15 @@
             "type": "object"
           }
         },
+        "frequency": {
+          "type": "null"
+        },
+        "frequency_note": {
+          "type": "string"
+        },
+        "frequency_verified": {
+          "type": "boolean"
+        },
         "input_end": {
           "type": "string"
         },
@@ -3009,6 +3054,9 @@
         "annualized_return",
         "as_of",
         "evidence",
+        "frequency",
+        "frequency_note",
+        "frequency_verified",
         "input_end",
         "input_length",
         "input_start",
@@ -3038,6 +3086,15 @@
         },
         "excess_volatility": {
           "type": "number"
+        },
+        "frequency": {
+          "type": "null"
+        },
+        "frequency_note": {
+          "type": "string"
+        },
+        "frequency_verified": {
+          "type": "boolean"
         },
         "input_end": {
           "type": "string"
@@ -3078,6 +3135,9 @@
         "as_of",
         "evidence",
         "excess_volatility",
+        "frequency",
+        "frequency_note",
+        "frequency_verified",
         "input_end",
         "input_length",
         "input_start",
@@ -3112,6 +3172,15 @@
           "items": {
             "type": "object"
           }
+        },
+        "frequency": {
+          "type": "null"
+        },
+        "frequency_note": {
+          "type": "string"
+        },
+        "frequency_verified": {
+          "type": "boolean"
         },
         "input_end": {
           "type": "string"
@@ -3156,6 +3225,9 @@
         "downside_deviation",
         "downside_observations",
         "evidence",
+        "frequency",
+        "frequency_note",
+        "frequency_verified",
         "input_end",
         "input_length",
         "input_start",
@@ -3245,6 +3317,15 @@
             "type": "object"
           }
         },
+        "frequency": {
+          "type": "null"
+        },
+        "frequency_note": {
+          "type": "string"
+        },
+        "frequency_verified": {
+          "type": "boolean"
+        },
         "input_end": {
           "type": "string"
         },
@@ -3280,6 +3361,9 @@
         "annualization_factor",
         "as_of",
         "evidence",
+        "frequency",
+        "frequency_note",
+        "frequency_verified",
         "input_end",
         "input_length",
         "input_start",
