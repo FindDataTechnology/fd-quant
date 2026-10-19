@@ -106,6 +106,18 @@ def build_manifest() -> dict:
         },
         # 输出结构同样派生（mcp-result-contract）：`undeclared` 显式列出未声明的
         # 工具，使"没有声明"这件事在清单里可见，而不是静默空缺。
+        # 命名语序约定（mcp-tool-naming）：写进生成器而不是手抄进 manifest，
+        # 否则每次重新生成都会把它冲掉——而这类"被冲掉的字段"不会有任何提示。
+        "naming_convention": {
+            "order": "verb_noun",
+            "applies_to": "new_tools",
+            "note": ("新工具一律 `动词_名词`。既有名词序工具**不改名**——改名会破坏已发布 "
+                     "pack 的引用（一个技能文本里点名的工具名消失即整个套件不可用）；"
+                     "它们在清单中登记为 historical，改名的唯一正当路径是兼容期机制。"),
+            "historical": "see tool_naming_legacy",
+            "prefix_policy": ("跨服务同名工具不得靠前缀区分（前缀是服务标识而非工具语义）；"
+                              "同名消解靠描述里写明部署与数据源差异。"),
+        },
         "output_structure": {
             "declared": declared_outputs,
             "undeclared": undeclared(),

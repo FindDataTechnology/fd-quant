@@ -22,11 +22,14 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import sys
 
 from fastmcp import FastMCP
 
+from .error_mapping import map_errors
 from .output_schemas import output_schema_for
+from . import workflows
 from .surface import all_surface_tools, missing_families
 
 SERVER_NAME = "fd-quant"
@@ -58,9 +61,17 @@ def build_server() -> FastMCP:
         )
 
     for spec in all_surface_tools():
-        app.tool(spec.fn, name=spec.name, description=spec.doc,
+        # 包一层错误映射（mcp-error-semantics）：领域异常 → 结构化错误码。
+        # 不包的话 fastmcp 会把异常包成一段文本、structuredContent 为空，
+        # 调用方只能靠解析中文决定要不要重试。
+        app.tool(map_errors(spec.fn), name=spec.name, description=spec.doc,
                  annotations=spec.tool_annotations,
                  output_schema=output_schema_for(spec.name))
+
+    for uri, (title, text) in workflows.RESOURCES.items():
+        # 每个 URI 一个闭包：直接捕获 text 会在循环结束后全部指向最后一份。
+        app.resource(uri, name=title, mime_type="text/markdown")(
+            functools.partial(lambda _t: _t, text))
 
     @app.custom_route("/health", methods=["GET"])
     async def health(_request):  # noqa: ANN001 — FastMCP 传 Request，此处不用

@@ -310,6 +310,13 @@
       "openWorldHint": false
     }
   },
+  "naming_convention": {
+    "order": "verb_noun",
+    "applies_to": "new_tools",
+    "note": "新工具一律 `动词_名词`。既有名词序工具**不改名**——改名会破坏已发布 pack 的引用（一个技能文本里点名的工具名消失即整个套件不可用）；它们在清单中登记为 historical，改名的唯一正当路径是兼容期机制。",
+    "historical": "see tool_naming_legacy",
+    "prefix_policy": "跨服务同名工具不得靠前缀区分（前缀是服务标识而非工具语义）；同名消解靠描述里写明部署与数据源差异。"
+  },
   "output_structure": {
     "declared": [
       "build_valuation_synthesis",
@@ -366,13 +373,6 @@
     "undeclared": [],
     "source": "schemas/outputs.json（由 scripts/gen_output_schemas.py 从运行时实测生成）",
     "note": "required = 多组输入下键集合的交集；类型取并集（null 是「该值不存在」的正式表达）；payload/target_weights 引用契约真源 schemas/rating.schema.json 与 target-weights.schema.json。"
-  },
-  "naming_convention": {
-    "order": "verb_noun",
-    "applies_to": "new_tools",
-    "note": "新工具一律 `动词_名词`。既有名词序工具**不改名**——改名会破坏已发布 pack 的引用（一个技能文本里点名的工具名消失即整个套件不可用）；它们在本 清单中登记为 historical，改名的唯一正当路径是组 6.5 的兼容期机制。",
-    "historical": "see tool_naming_legacy",
-    "prefix_policy": "跨服务同名工具不得靠前缀区分（前缀是服务标识而非工具语义）；同名消解靠描述里写明部署与数据源差异。"
   },
   "tool_groups": [
     {
