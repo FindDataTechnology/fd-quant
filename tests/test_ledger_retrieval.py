@@ -13,6 +13,9 @@ import pytest
 import ledgerdata as ld
 from fd_quant.ledger import LedgerStore
 
+#: 单用户本地账本场景的测试调用者（隔离新增维度后必须显式给出）
+CALLER = "test-caller"
+
 SYMBOL = "600519.SS"
 OTHER = "000001.SZ"
 
@@ -25,7 +28,7 @@ def store(tmp_path) -> LedgerStore:
 def _record(store: LedgerStore, *, symbol: str = SYMBOL, as_of: str = "2025-01-06",
             pack: str = ld.PACK, skill: str = ld.SKILL, side: str = "buy") -> dict:
     return store.record(
-        as_of=as_of, symbol=symbol, pack=pack, skill=skill,
+        caller=CALLER, as_of=as_of, symbol=symbol, pack=pack, skill=skill,
         payload=ld.rating(as_of, symbol, side=side, pack=pack, skill=skill),
     )
 
@@ -101,14 +104,14 @@ def test_records_settled_after_as_of_are_filtered_out(store):
     late = _record(store, as_of="2025-01-14")
     _settle(store, late["decision_id"], start="2025-01-14")           # 结算日 2025-01-19
 
-    out = store.retrieve(symbol=SYMBOL, as_of="2025-01-11")
+    out = store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-01-11")
     ids = [x["decision_id"] for x in out["same_symbol"]]
     assert early["decision_id"] in ids
     assert late["decision_id"] not in ids
     assert out["counts"]["total"] == 1
 
     # 把口径推到第二条的结算日之后，两条都在（对照：过滤的是时间，不是记录）
-    later = store.retrieve(symbol=SYMBOL, as_of="2025-01-19")
+    later = store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-01-19")
     assert {x["decision_id"] for x in later["same_symbol"]} == {
         early["decision_id"], late["decision_id"]
     }
@@ -121,7 +124,7 @@ def test_results_are_ordered_by_settlement_date_descending(store):
         r = _record(store, symbol=f"60051{i}.SZ", as_of=start)
         _settle(store, r["decision_id"], start=start)
         ids.append(r["decision_id"])
-    out = store.retrieve(symbol=SYMBOL, as_of="2025-12-31")
+    out = store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-12-31")
     dates = [x["settlement"]["settlement_date"] for x in out["cross_symbol"]]
     assert dates == sorted(dates, reverse=True)
     assert len(out["cross_symbol"]) == 3
@@ -136,7 +139,7 @@ def test_n_same_limit_returns_the_most_recent_n(store):
         _settle(store, r["decision_id"], start=start, sym_p1=100.0 + i)
         created.append((start, r["decision_id"]))
 
-    out = store.retrieve(symbol=SYMBOL, as_of="2025-12-31", n_same=5)
+    out = store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-12-31", n_same=5)
     assert len(out["same_symbol"]) == 5
     returned = {x["decision_id"] for x in out["same_symbol"]}
     expected = {did for _s, did in created[-5:]}  # 结算日最晚的 5 条
@@ -144,9 +147,9 @@ def test_n_same_limit_returns_the_most_recent_n(store):
     assert out["n_same"] == 5
 
     # N 可配：N=3 只回 3 条；N=8 回全部 8 条
-    assert len(store.retrieve(symbol=SYMBOL, as_of="2025-12-31", n_same=3)["same_symbol"]) == 3
-    assert len(store.retrieve(symbol=SYMBOL, as_of="2025-12-31", n_same=8)["same_symbol"]) == 8
-    assert len(store.retrieve(symbol=SYMBOL, as_of="2025-12-31", n_same=0)["same_symbol"]) == 0
+    assert len(store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-12-31", n_same=3)["same_symbol"]) == 3
+    assert len(store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-12-31", n_same=8)["same_symbol"]) == 8
+    assert len(store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-12-31", n_same=0)["same_symbol"]) == 0
 
 
 def test_m_cross_limit_bounds_the_cross_symbol_lessons(store):
@@ -156,12 +159,12 @@ def test_m_cross_limit_bounds_the_cross_symbol_lessons(store):
         start = f"2025-{i + 1:02d}-01"
         r = _record(store, symbol=sym, as_of=start)
         _settle(store, r["decision_id"], start=start)
-    out = store.retrieve(symbol=SYMBOL, as_of="2025-12-31")
+    out = store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-12-31")
     assert len(out["cross_symbol"]) == 3
     assert out["m_cross"] == 3
     assert all(x["symbol"] != SYMBOL for x in out["cross_symbol"])
 
-    out_m = store.retrieve(symbol=SYMBOL, as_of="2025-12-31", m_cross=5)
+    out_m = store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-12-31", m_cross=5)
     assert len(out_m["cross_symbol"]) == 5
 
 
@@ -171,7 +174,7 @@ def test_same_symbol_and_cross_symbol_are_disjoint(store):
     _settle(store, mine["decision_id"], start="2025-01-06")
     theirs = _record(store, symbol=OTHER, as_of="2025-01-06")
     _settle(store, theirs["decision_id"], start="2025-01-06")
-    out = store.retrieve(symbol=SYMBOL, as_of="2025-12-31")
+    out = store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-12-31")
     same_ids = {x["decision_id"] for x in out["same_symbol"]}
     cross_ids = {x["decision_id"] for x in out["cross_symbol"]}
     assert same_ids == {mine["decision_id"]}
@@ -184,7 +187,7 @@ def test_pending_records_never_appear(store):
     done = _record(store, symbol=SYMBOL, as_of="2025-01-06")
     _settle(store, done["decision_id"], start="2025-01-06")
     pending = _record(store, symbol=SYMBOL, as_of="2025-02-06")
-    out = store.retrieve(symbol=SYMBOL, as_of="2025-12-31")
+    out = store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-12-31")
     assert {x["decision_id"] for x in out["same_symbol"]} == {done["decision_id"]}
     assert pending["decision_id"] not in {x["decision_id"] for x in out["same_symbol"]}
 
@@ -195,7 +198,7 @@ def test_pack_filter_narrows_the_retrieval(store):
     _settle(store, a["decision_id"], start="2025-01-06")
     b = _record(store, symbol="000002.SZ", as_of="2025-01-06", pack="pack-b")
     _settle(store, b["decision_id"], start="2025-01-06")
-    out = store.retrieve(symbol=SYMBOL, as_of="2025-12-31", pack="pack-a")
+    out = store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-12-31", pack="pack-a")
     assert {x["decision_id"] for x in out["same_symbol"]} == {a["decision_id"]}
     assert out["cross_symbol"] == []
     assert out["pack"] == "pack-a"
@@ -203,7 +206,7 @@ def test_pack_filter_narrows_the_retrieval(store):
 
 def test_retrieval_from_an_empty_ledger_returns_empty_arrays(store):
     """空账本查询是合法结果（两个空数组），不是错误。"""
-    out = store.retrieve(symbol=SYMBOL, as_of="2025-01-01")
+    out = store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-01-01")
     assert out["same_symbol"] == [] and out["cross_symbol"] == []
     assert out["counts"] == {"same_symbol": 0, "cross_symbol": 0, "total": 0}
 
@@ -213,13 +216,13 @@ def test_retrieval_validates_its_arguments(store):
     from fd_quant.ledger import LedgerError, SettlementRefused
 
     with pytest.raises(SettlementRefused):
-        store.retrieve(symbol=SYMBOL, as_of="2025/01/01")
+        store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025/01/01")
     with pytest.raises(LedgerError):
-        store.retrieve(symbol="  ", as_of="2025-01-01")
+        store.retrieve(caller=CALLER, symbol="  ", as_of="2025-01-01")
     with pytest.raises(LedgerError):
-        store.retrieve(symbol=SYMBOL, as_of="2025-01-01", n_same=-1)
+        store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-01-01", n_same=-1)
     with pytest.raises(LedgerError):
-        store.retrieve(symbol=SYMBOL, as_of="2025-01-01", m_cross=1.5)
+        store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-01-01", m_cross=1.5)
 
 
 # ── 3.3 检索项含快照与结算 ──────────────────────────────────────
@@ -228,14 +231,14 @@ def test_retrieval_validates_its_arguments(store):
 def test_retrieved_item_carries_snapshot_and_settlement_field_by_field(store):
     """task 3.3：检索返回项逐字段断言（判定快照 + 结算结果 + 反思）。"""
     r = store.record(
-        as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
+        caller=CALLER, as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
         payload=ld.rating("2025-01-06", SYMBOL, side="buy", conviction=0.7,
                           price_target=1500.0, evidence=[("ev-dcf", 1500.0, "CNY/share")],
                           run_id="run-001"),
     )
     _settle(store, r["decision_id"], reflection="方向对、幅度低估，下次给更宽的点位区间。",
             benchmark_symbol="000300.SS")
-    item = store.retrieve(symbol=SYMBOL, as_of="2025-12-31")["same_symbol"][0]
+    item = store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-12-31")["same_symbol"][0]
 
     # 判定快照
     assert item["decision_id"] == r["decision_id"]
@@ -275,15 +278,15 @@ def test_retrieved_item_carries_the_revision_pointer(store):
     revises 指向 v2、revision_seq=2，而初代 v1 的 payload 逐字未被改写。
     """
     v1 = _record(store, as_of="2025-01-06", side="buy")
-    v2 = store.record(as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
+    v2 = store.record(caller=CALLER, as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
                       payload=ld.rating("2025-01-06", SYMBOL, side="hold"),
                       revises=v1["decision_id"])
-    v3 = store.record(as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
+    v3 = store.record(caller=CALLER, as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
                       payload=ld.rating("2025-01-06", SYMBOL, side="sell"),
                       revises=v2["decision_id"])
     assert (v2["created"], v3["created"]) == (True, True)
     _settle(store, v3["decision_id"], start="2025-01-06")
-    item = store.retrieve(symbol=SYMBOL, as_of="2025-12-31")["same_symbol"][0]
+    item = store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-12-31")["same_symbol"][0]
     assert item["decision_id"] == v3["decision_id"]
     assert item["revises"] == v2["decision_id"]
     assert item["revision_seq"] == 2
@@ -296,7 +299,7 @@ def test_retrieval_result_is_json_serialisable(store):
     """检索结果整体可 JSON 序列化（`allow_nan=False`）——消费方要能直接塞进上下文。"""
     r = _record(store)
     _settle(store, r["decision_id"], reflection="一段反思。")
-    out = store.retrieve(symbol=SYMBOL, as_of="2025-12-31")
+    out = store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-12-31")
     text = json.dumps(out, ensure_ascii=False, allow_nan=False)
     assert SYMBOL in text and "一段反思。" in text
 
@@ -399,7 +402,7 @@ def test_the_only_reflection_output_path_is_retrieval(store):
     # 聚合视图不含反思文本（数字视图与文本视图分离：绩效数字可公开，反思只随点内检索）
     r = _record(store)
     _settle(store, r["decision_id"], reflection="不应出现在聚合里的反思文本。")
-    stats = store.stats_by_pack(as_of="2025-12-31")
+    stats = store.stats_by_pack(caller=CALLER, as_of="2025-12-31")
     assert "不应出现在聚合里的反思文本。" not in json.dumps(stats, ensure_ascii=False, default=str)
     assert "reflection" not in json.dumps(stats)
 
@@ -427,7 +430,7 @@ def _three_alpha_settlements(store: LedgerStore) -> list[dict]:
 def test_stats_by_pack_counts_mean_alpha_and_win_rate(store):
     """task 4.1 / spec Scenario「聚合统计正确」：3 条 +1% / -0.5% / +2% → 样本 3、胜率 2/3。"""
     _three_alpha_settlements(store)
-    out = store.stats_by_pack(as_of="2025-12-31")
+    out = store.stats_by_pack(caller=CALLER, as_of="2025-12-31")
     assert out["only_settled"] is True
     row = next(g for g in out["rows"] if g["pack"] == ld.PACK)
     assert row["samples"] == 3
@@ -443,7 +446,7 @@ def test_stats_only_counts_settled_records(store):
     _settle(store, settled["decision_id"], start="2025-01-06", sym_p1=101.0,
             bench_p0=1000.0, bench_p1=1000.0)
     _record(store, symbol="000001.SZ", as_of="2025-02-06")  # pending，不结算
-    out = store.stats_by_pack(as_of="2025-12-31")
+    out = store.stats_by_pack(caller=CALLER, as_of="2025-12-31")
     row = next(g for g in out["rows"] if g["pack"] == ld.PACK)
     assert row["samples"] == 1
     assert row["counts"] if False else True
@@ -456,10 +459,10 @@ def test_stats_respects_the_as_of_cutoff(store):
     _settle(store, early["decision_id"], start="2025-01-06")
     late = _record(store, symbol="000001.SZ", as_of="2025-02-06")
     _settle(store, late["decision_id"], start="2025-02-06")
-    early_only = store.stats_by_pack(as_of="2025-01-11")
+    early_only = store.stats_by_pack(caller=CALLER, as_of="2025-01-11")
     row = next(g for g in early_only["rows"] if g["pack"] == ld.PACK)
     assert row["samples"] == 1
-    both = store.stats_by_pack(as_of="2025-12-31")
+    both = store.stats_by_pack(caller=CALLER, as_of="2025-12-31")
     assert next(g for g in both["rows"] if g["pack"] == ld.PACK)["samples"] == 2
 
 
@@ -471,7 +474,7 @@ def test_win_rate_is_alpha_strictly_greater_than_zero(store):
     win = _record(store, symbol="000001.SZ", as_of="2025-01-06")
     _settle(store, win["decision_id"], start="2025-01-06", sym_p0=100.0, sym_p1=111.0,
             bench_p0=1000.0, bench_p1=1100.0)   # alpha > 0
-    row = next(g for g in store.stats_by_pack(as_of="2025-12-31")["rows"]
+    row = next(g for g in store.stats_by_pack(caller=CALLER, as_of="2025-12-31")["rows"]
                if g["pack"] == ld.PACK)
     assert row["samples"] == 2 and row["wins"] == 1
     assert row["win_rate"] == pytest.approx(0.5)
@@ -480,13 +483,13 @@ def test_win_rate_is_alpha_strictly_greater_than_zero(store):
 def test_stats_group_by_skill(store):
     """按 skill 分组：同 pack 两个技能各成一行（design.md 的有意设计，用于"哪个模式更准"）。"""
     for skill, p1 in (("equity-research-thesis", 111.0), ("equity-research-modeling", 99.0)):
-        r = store.record(as_of="2025-01-06", symbol=f"6005{len(skill)}.SS", pack=ld.PACK,
+        r = store.record(caller=CALLER, as_of="2025-01-06", symbol=f"6005{len(skill)}.SS", pack=ld.PACK,
                          skill=skill,
                          payload=ld.rating("2025-01-06", f"6005{len(skill)}.SS", pack=ld.PACK,
                                            skill=skill))
         _settle(store, r["decision_id"], start="2025-01-06", sym_p1=p1,
                 bench_p0=1000.0, bench_p1=1000.0)
-    out = store.stats_by_pack(as_of="2025-12-31", group_by_skill=True)
+    out = store.stats_by_pack(caller=CALLER, as_of="2025-12-31", group_by_skill=True)
     assert out["group_by"] == ["pack", "skill"]
     rows = {g["skill"]: g for g in out["rows"] if g["pack"] == ld.PACK}
     assert rows["equity-research-thesis"]["samples"] == 1
@@ -505,7 +508,7 @@ def test_stats_group_by_holding_period(store):
         store.settle(decision_id=r["decision_id"], symbol_dates=sym, symbol_prices=prices,
                      benchmark_dates=bench_dates, benchmark_prices=bench_prices,
                      as_of=sym[-1], holding_days=hd)
-    out = store.stats_by_pack(as_of="2025-12-31", group_by_holding=True,
+    out = store.stats_by_pack(caller=CALLER, as_of="2025-12-31", group_by_holding=True,
                               holding_days=[3, 5, 10])
     assert out["group_by"] == ["pack", "holding_days"]
     rows = {g["holding_days"]: g for g in out["rows"] if g["pack"] == ld.PACK}
@@ -516,10 +519,10 @@ def test_stats_group_by_holding_period(store):
 
 def test_stats_by_skill_and_holding_together(store):
     """两级分组可同时开：pack × skill × holding_days 的组键唯一且各自成行。"""
-    r = store.record(as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
+    r = store.record(caller=CALLER, as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
                      payload=ld.rating("2025-01-06", SYMBOL, pack=ld.PACK, skill=ld.SKILL))
     _settle(store, r["decision_id"], start="2025-01-06")
-    out = store.stats_by_pack(as_of="2025-12-31", group_by_skill=True, group_by_holding=True,
+    out = store.stats_by_pack(caller=CALLER, as_of="2025-12-31", group_by_skill=True, group_by_holding=True,
                               holding_days=[5, 10])
     assert out["group_by"] == ["pack", "skill", "holding_days"]
     rows = {g["holding_days"]: g for g in out["rows"] if g["pack"] == ld.PACK}
@@ -533,7 +536,7 @@ def test_stats_by_skill_and_holding_together(store):
 def test_querying_a_pack_with_no_settlements_returns_a_zero_row(store):
     """task 4.2 / spec Scenario「空组明确返回零」：无结算记录的 pack 返回样本数 0 的行。"""
     _three_alpha_settlements(store)
-    out = store.stats_by_pack(as_of="2025-12-31", packs=["pack-never-settled"])
+    out = store.stats_by_pack(caller=CALLER, as_of="2025-12-31", packs=["pack-never-settled"])
     row = next(g for g in out["rows"] if g["pack"] == "pack-never-settled")
     assert row["samples"] == 0
     assert row["wins"] == 0
@@ -544,7 +547,7 @@ def test_querying_a_pack_with_no_settlements_returns_a_zero_row(store):
 def test_registered_but_unsettled_pack_shows_zero_not_omitted(store):
     """已落记录但一条都没结算的 pack：行在场、样本 0（"还没结算" ≠ "没这个 pack"）。"""
     _record(store, symbol=SYMBOL, as_of="2025-01-06")  # pending，不结算
-    out = store.stats_by_pack(as_of="2025-12-31")
+    out = store.stats_by_pack(caller=CALLER, as_of="2025-12-31")
     assert ld.PACK in out["registered_packs"]
     row = next(g for g in out["rows"] if g["pack"] == ld.PACK)
     assert row["samples"] == 0 and row["mean_alpha"] is None
@@ -552,7 +555,7 @@ def test_registered_but_unsettled_pack_shows_zero_not_omitted(store):
 
 def test_empty_ledger_stats_are_empty_rows_not_an_error(store):
     """空账本 + 显式请求 pack → 零行（不报错；这也是端到端演练的起点）。"""
-    out = store.stats_by_pack(as_of="2025-12-31", packs=["pack-a", "pack-b"])
+    out = store.stats_by_pack(caller=CALLER, as_of="2025-12-31", packs=["pack-a", "pack-b"])
     assert [g["pack"] for g in out["rows"]] == ["pack-a", "pack-b"]
     assert all(g["samples"] == 0 for g in out["rows"])
     assert out["registered_packs"] == ["pack-a", "pack-b"]
@@ -562,7 +565,7 @@ def test_zero_sample_row_for_a_holding_bucket_that_has_no_settlements(store):
     """按持有期分组时，没出现过的窗口档位同样显式出 0 行（3 日有、10 日无）。"""
     r = _record(store, as_of="2025-01-06")
     _settle(store, r["decision_id"], start="2025-01-06")
-    out = store.stats_by_pack(as_of="2025-12-31", group_by_holding=True,
+    out = store.stats_by_pack(caller=CALLER, as_of="2025-12-31", group_by_holding=True,
                               holding_days=[5, 10])
     rows = {g["holding_days"]: g for g in out["rows"] if g["pack"] == ld.PACK}
     assert rows[5]["samples"] == 1 and rows[10]["samples"] == 0
@@ -572,7 +575,7 @@ def test_zero_sample_row_for_a_holding_bucket_that_has_no_settlements(store):
 def test_stats_output_is_json_serialisable(store):
     """聚合结果可 JSON 序列化（allow_nan=False）；含空组时也不例外。"""
     _three_alpha_settlements(store)
-    out = store.stats_by_pack(as_of="2025-12-31", packs=["pack-empty"],
+    out = store.stats_by_pack(caller=CALLER, as_of="2025-12-31", packs=["pack-empty"],
                               group_by_holding=True, holding_days=[3, 5, 10])
     json.dumps(out, allow_nan=False, ensure_ascii=False)
     assert any(g["samples"] == 0 for g in out["rows"])

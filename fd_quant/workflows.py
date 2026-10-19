@@ -67,8 +67,11 @@ DECISION_LOOP = """# fd-quant 决策账本闭环（多步组合）
 1. **落账** —— `record_decision(as_of, symbol, pack, skill, payload)`
    - `payload` 必须是合法 `Rating`，且 `payload.as_of == as_of`、
      `payload.subject == symbol`、`payload.producer.pack/skill == pack/skill`
-   - 幂等键 (as_of, symbol, pack, skill)：重复提交**被拒但返回既有
+   - 幂等键 (caller, as_of, symbol, pack, skill)：重复提交**被拒但返回既有
      decision_id**，总数不变——这是"每个决策只算一次账"的屏障
+   - `caller` 不是入参：由调用上下文解析（HTTP 用 Authorization 的 Bearer 指纹，
+     stdio 用 FD_QUANT_CALLER，都没有则 anonymous），故无法声称自己是别人。
+     记录按调用者隔离：检索与聚合只回自己的
    - 修订用 `revises=<既有 decision_id>` 发**新记录**，被修订记录逐字不改
 
 2. **结算** —— `settle_decision(decision_id, symbol_dates, symbol_prices,

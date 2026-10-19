@@ -16,6 +16,9 @@ from fd_quant.contracts.models import ContractError, validate
 from fd_quant.contracts.unsourced import unsourced_fields
 from fd_quant.ledger import LedgerStore
 
+#: 单用户本地账本场景的测试调用者（隔离新增维度后必须显式给出）
+CALLER = "test-caller"
+
 FIXTURES = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "rating" / "valid"
 SYMBOL = "600519.SS"
 
@@ -44,7 +47,7 @@ def test_rating_fixtures_round_trip_through_the_ledger(store, name, payload):
     before = validate(payload, kind="rating")
     assert before["valid"], (name, before["errors"])
 
-    r = store.record(as_of=payload["as_of"], symbol=payload["subject"],
+    r = store.record(caller=CALLER, as_of=payload["as_of"], symbol=payload["subject"],
                      pack=payload["producer"]["pack"], skill=payload["producer"]["skill"],
                      payload=payload)
     assert r["created"] is True, name
@@ -67,7 +70,7 @@ def test_rating_instance_object_is_accepted_and_stored(store):
 
     rating = Rating(as_of="2025-01-06", subject=SYMBOL, side="strong_buy", basis="实例输入。",
                     producer=Producer(pack=ld.PACK, skill=ld.SKILL), conviction=0.9)
-    r = store.record(as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
+    r = store.record(caller=CALLER, as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
                      payload=rating)
     item = store.get(r["decision_id"])
     assert item["payload"] == rating.to_dict()
@@ -79,7 +82,7 @@ def test_stored_payload_is_validated_at_the_boundary_not_at_read_time(store):
     bad = ld.rating("2025-01-06", SYMBOL).to_dict()
     bad["conviction"] = 1.5   # 契约要求 [0, 1]
     with pytest.raises(ContractError) as ei:
-        store.record(as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
+        store.record(caller=CALLER, as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
                      payload=bad)
     assert ei.value.path == "conviction"
     assert store.row_counts()["decisions"] == 0
@@ -89,7 +92,7 @@ def test_review_side_survives_the_round_trip(store):
     """review（"证据不足，不确定"是合法判定，不是错误）在账本里逐字保留、不被降级。"""
     payload = ld.rating("2025-01-06", SYMBOL, side="review", conviction=None,
                         basis="证据集不足以支撑方向判断。").to_dict()
-    r = store.record(as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
+    r = store.record(caller=CALLER, as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
                      payload=payload)
     got = store.get(r["decision_id"])["payload"]
     assert got["side"] == "review"
@@ -101,13 +104,13 @@ def test_evidence_references_are_stored_and_readable(store):
     """引用数组（evidence）落账可查：缺省取 payload.target_evidence_ids，也可显式覆盖。"""
     payload = ld.rating("2025-01-06", SYMBOL, price_target=1500.0,
                         evidence=[("ev-dcf", 1500.0, "CNY/share")]).to_dict()
-    r = store.record(as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
+    r = store.record(caller=CALLER, as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
                      payload=payload)
     assert store.get(r["decision_id"])["evidence"] == ["ev-dcf"]
 
     other = ld.rating("2025-01-07", SYMBOL).to_dict()
     other["as_of"] = "2025-01-07"
-    r2 = store.record(as_of="2025-01-07", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
+    r2 = store.record(caller=CALLER, as_of="2025-01-07", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
                       payload=other, evidence=["ref-a", "ref-b"])
     assert store.get(r2["decision_id"])["evidence"] == ["ref-a", "ref-b"]
 
@@ -121,7 +124,7 @@ def test_target_weights_can_be_associated_and_round_trips(store):
     存的是完整契约实例（不是 id 引用），故权重快照与判定同条记录、同一时刻可查回。
     """
     tw = ld.target_weights("2025-01-06")
-    r = store.record(as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
+    r = store.record(caller=CALLER, as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
                      payload=ld.rating("2025-01-06", SYMBOL), target_weights=tw)
     item = store.get(r["decision_id"])
     assert item["target_weights"] == tw.to_dict()
@@ -135,7 +138,7 @@ def test_illegal_target_weights_are_refused(store):
     bad = ld.target_weights("2025-01-06").to_dict()
     bad["weights"] = {"600519.SS": 0.8, "000001.SZ": 0.7}
     with pytest.raises(ContractError) as ei:
-        store.record(as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
+        store.record(caller=CALLER, as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
                      payload=ld.rating("2025-01-06", SYMBOL), target_weights=bad)
     assert ei.value.path == "weights"
     assert store.row_counts()["decisions"] == 0
@@ -143,7 +146,7 @@ def test_illegal_target_weights_are_refused(store):
 
 def test_records_without_target_weights_keep_the_column_null(store):
     """没关联权重时该列为 null（"没给"与"给了空权重"是两件事）。"""
-    r = store.record(as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
+    r = store.record(caller=CALLER, as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
                      payload=ld.rating("2025-01-06", SYMBOL))
     assert store.get(r["decision_id"])["target_weights"] is None
 
@@ -151,12 +154,12 @@ def test_records_without_target_weights_keep_the_column_null(store):
 def test_target_weights_survives_a_revision(store):
     """修订可以改权重而不动判定：两代各自的权重快照都查得回（历史诚实）。"""
     tw1 = ld.target_weights("2025-01-06")
-    v1 = store.record(as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
+    v1 = store.record(caller=CALLER, as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
                       payload=ld.rating("2025-01-06", SYMBOL), target_weights=tw1)
     tw2 = ld.target_weights("2025-01-06")
     tw2.weights = {"600519.SS": 0.2, "000001.SZ": 0.1}
     tw2.cash_floor = 0.7
-    v2 = store.record(as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
+    v2 = store.record(caller=CALLER, as_of="2025-01-06", symbol=SYMBOL, pack=ld.PACK, skill=ld.SKILL,
                       payload=ld.rating("2025-01-06", SYMBOL), target_weights=tw2,
                       revises=v1["decision_id"])
     assert v2["created"] is True

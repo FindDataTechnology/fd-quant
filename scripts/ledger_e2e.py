@@ -50,6 +50,9 @@ PACK_B = "pack-portfolio-risk"
 SKILL_A = "equity-research-thesis"
 SKILL_B = "portfolio-risk-budget"
 
+#: 演练身份：账本按 caller 隔离，这里显式钉一个固定值。
+CALLER = "e2e-caller"
+
 
 class _SeriesSource:
     """"调用方"的价格源：确定性构造，不联网、不读库。
@@ -104,7 +107,7 @@ def run(db_path: Path) -> dict:
     recorded = []
     for symbol, as_of, pack, skill, side, conviction, basis in decisions:
         r = store.record(
-            as_of=as_of, symbol=symbol, pack=pack, skill=skill,
+            caller=CALLER, as_of=as_of, symbol=symbol, pack=pack, skill=skill,
             payload=ld.rating(as_of, symbol, side=side, conviction=conviction, basis=basis,
                               pack=pack, skill=skill),
             now=f"{as_of}T09:00:00+00:00",
@@ -123,7 +126,7 @@ def run(db_path: Path) -> dict:
     target = recorded[3]
     before_revision = store.get(target["decision_id"])
     revision = store.record(
-        as_of=target["as_of"], symbol=target["symbol"], pack=target["pack"],
+        caller=CALLER, as_of=target["as_of"], symbol=target["symbol"], pack=target["pack"],
         skill=target["skill"],
         payload=ld.rating(target["as_of"], target["symbol"], side="buy", conviction=0.5,
                           basis="负债端与资产端双双改善，上调至看多。",
@@ -147,7 +150,7 @@ def run(db_path: Path) -> dict:
     # ── 步骤 3：重复提交被拒（返回既有 id、行数不变）─────────────
     counts_before_duplicate = store.row_counts()
     duplicate = store.record(
-        as_of=decisions[0][1], symbol=decisions[0][0], pack=PACK_A, skill=SKILL_A,
+        caller=CALLER, as_of=decisions[0][1], symbol=decisions[0][0], pack=PACK_A, skill=SKILL_A,
         payload=ld.rating(decisions[0][1], decisions[0][0], side="buy", conviction=0.7,
                           basis="消费复苏主线，估值中位。", pack=PACK_A, skill=SKILL_A),
     )
@@ -249,7 +252,7 @@ def run(db_path: Path) -> dict:
     # ③ 全历史 → 全部可见。②是本演练的关键对照：10 日持有期的那条结算日在
     # 2025-01-16，故以 2025-01-12 检索时它必须缺席（点内纪律）。
     cutoffs = ["2025-01-08", "2025-01-12", "2025-12-31"]
-    pit = {c: store.retrieve(symbol="600519.SS", as_of=c, n_same=5, m_cross=3)
+    pit = {c: store.retrieve(caller=CALLER, symbol="600519.SS", as_of=c, n_same=5, m_cross=3)
            for c in cutoffs}
     assert pit["2025-01-08"]["counts"]["total"] == 0, pit["2025-01-08"]
 
@@ -331,11 +334,11 @@ def run(db_path: Path) -> dict:
     }
 
     # ── 步骤 7：聚合（含一个空组）────────────────────────────────
-    stats_all = store.stats_by_pack(as_of="2025-12-31")
-    stats_by_skill = store.stats_by_pack(as_of="2025-12-31", group_by_skill=True)
-    stats_by_holding = store.stats_by_pack(as_of="2025-12-31", group_by_holding=True,
+    stats_all = store.stats_by_pack(caller=CALLER, as_of="2025-12-31")
+    stats_by_skill = store.stats_by_pack(caller=CALLER, as_of="2025-12-31", group_by_skill=True)
+    stats_by_holding = store.stats_by_pack(caller=CALLER, as_of="2025-12-31", group_by_holding=True,
                                             holding_days=[3, 5, 10])
-    stats_empty = store.stats_by_pack(as_of="2025-12-31", packs=["pack-never-used"])
+    stats_empty = store.stats_by_pack(caller=CALLER, as_of="2025-12-31", packs=["pack-never-used"])
     steps["8_aggregate"] = {
         "by_pack": stats_all["rows"],
         "by_pack_and_skill": stats_by_skill["rows"],

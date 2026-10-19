@@ -22,6 +22,9 @@ import pytest
 import ledgerdata as ld
 from fd_quant.ledger import LedgerStore
 
+#: 单用户本地账本场景的测试调用者（隔离新增维度后必须显式给出）
+CALLER = "test-caller"
+
 REPO = Path(__file__).resolve().parents[1]
 LEDGER_DIR = REPO / "fd_quant" / "ledger"
 
@@ -49,7 +52,7 @@ def test_full_chain_runs_with_the_network_blocked(tmp_path, network_blocked):
     from fd_quant.ledger import SettlementRefused
 
     store = LedgerStore(tmp_path / "offline.db")
-    r = store.record(as_of="2025-01-06", symbol="600519.SS", pack=ld.PACK, skill=ld.SKILL,
+    r = store.record(caller=CALLER, as_of="2025-01-06", symbol="600519.SS", pack=ld.PACK, skill=ld.SKILL,
                      payload=ld.rating("2025-01-06", "600519.SS"))
     # 提前结算被拒（序列 3 日 < 持有期 5 日）
     three = ld.dates(3)
@@ -72,10 +75,10 @@ def test_full_chain_runs_with_the_network_blocked(tmp_path, network_blocked):
     assert again["created"] is False
     assert store.row_counts()["settlements"] == 1
 
-    found = store.retrieve(symbol="600519.SS", as_of="2025-12-31")
+    found = store.retrieve(caller=CALLER, symbol="600519.SS", as_of="2025-12-31")
     assert found["counts"]["same_symbol"] == 1
     assert found["same_symbol"][0]["settlement"]["reflection"] == "封网下的结算。"
-    stats = store.stats_by_pack(as_of="2025-12-31")
+    stats = store.stats_by_pack(caller=CALLER, as_of="2025-12-31")
     assert stats["rows"][0]["samples"] == 1
 
 

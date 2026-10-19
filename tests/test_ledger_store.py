@@ -21,6 +21,9 @@ import ledgerdata as ld
 from fd_quant.contracts.models import ContractError
 from fd_quant.ledger import LedgerStore, RevisionConflict, UnknownDecision
 
+#: 单用户本地账本场景的测试调用者（隔离新增维度后必须显式给出）
+CALLER = "test-caller"
+
 REPO = Path(__file__).resolve().parents[1]
 
 
@@ -38,7 +41,7 @@ def _record(store: LedgerStore, *, as_of: str = "2025-01-06", symbol: str = "600
             side: str = "buy", revises=None, pack: str = ld.PACK, skill: str = ld.SKILL,
             now: str | None = None):
     return store.record(
-        as_of=as_of, symbol=symbol, pack=pack, skill=skill,
+        caller=CALLER, as_of=as_of, symbol=symbol, pack=pack, skill=skill,
         payload=ld.rating(as_of, symbol, side=side, pack=pack, skill=skill),
         revises=revises, now=now,
     )
@@ -187,7 +190,7 @@ def test_interrupted_write_leaves_no_half_row(db_path, tmp_path):
 
         store = Interrupting({db!r})
         result = store.record(
-            as_of="2025-01-06", symbol="600519.SS", pack={pack!r}, skill={skill!r},
+            caller=CALLER, as_of="2025-01-06", symbol="600519.SS", pack={pack!r}, skill={skill!r},
             payload=ld.rating("2025-01-06", "600519.SS").to_dict(),
         )
         print("UNREACHABLE", result)
@@ -278,13 +281,13 @@ def test_same_key_with_different_skill_is_a_distinct_record(store):
 def test_payload_must_agree_with_the_key_dimensions(store):
     """payload 与键不一致即拒绝并点名两边（不静默取信其中一边）。"""
     with pytest.raises(ContractError) as ei:
-        store.record(as_of="2025-01-06", symbol="000001.SZ", pack=ld.PACK, skill=ld.SKILL,
+        store.record(caller=CALLER, as_of="2025-01-06", symbol="000001.SZ", pack=ld.PACK, skill=ld.SKILL,
                      payload=ld.rating("2025-01-06", "600519.SS"))
     assert ei.value.path == "subject"
     assert "600519.SS" in ei.value.reason and "000001.SZ" in ei.value.reason
 
     with pytest.raises(ContractError) as ei2:
-        store.record(as_of="2025-01-06", symbol="600519.SS", pack="other-pack", skill=ld.SKILL,
+        store.record(caller=CALLER, as_of="2025-01-06", symbol="600519.SS", pack="other-pack", skill=ld.SKILL,
                      payload=ld.rating("2025-01-06", "600519.SS"))
     assert ei2.value.path == "producer.pack"
     assert store.row_counts()["decisions"] == 0
@@ -295,7 +298,7 @@ def test_illegal_payload_is_refused_by_the_contract(store):
     bad = ld.rating("2025-01-06", "600519.SS").to_dict()
     bad["side"] = "moon"
     with pytest.raises(ContractError) as ei:
-        store.record(as_of="2025-01-06", symbol="600519.SS", pack=ld.PACK, skill=ld.SKILL,
+        store.record(caller=CALLER, as_of="2025-01-06", symbol="600519.SS", pack=ld.PACK, skill=ld.SKILL,
                      payload=bad)
     assert ei.value.path == "side"
     assert store.row_counts()["decisions"] == 0
@@ -353,7 +356,7 @@ def test_revision_cannot_change_the_idempotency_key(store):
     """修订必须保持幂等键：换一个 symbol 提交修订被拒并点名不一致的字段。"""
     v1 = _record(store, symbol="600519.SS")
     with pytest.raises(RevisionConflict) as ei:
-        store.record(as_of="2025-01-06", symbol="000001.SZ", pack=ld.PACK, skill=ld.SKILL,
+        store.record(caller=CALLER, as_of="2025-01-06", symbol="000001.SZ", pack=ld.PACK, skill=ld.SKILL,
                      payload=ld.rating("2025-01-06", "000001.SZ"), revises=v1["decision_id"])
     assert "symbol" in str(ei.value)
 

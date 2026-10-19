@@ -40,7 +40,7 @@ GROUP_DESCRIPTIONS = {
     "regime_detection": "regime 双速检测：慢速（趋势 + 回撤 + 波动率 Z）输出 risk_on/neutral/risk_off 与逐判据证据；快速（N 日冲击 + 波动率跳变）输出是否触发与降仓建议证据。波动率序列由调用方提供，本层不取数。",
     "factor_statistics": "因子统计原子：IC（Pearson 与 Spearman）、按因子分组的等权组合收益、单因子暴露回归（系数 / t 值 / R²）。不内置任何因子定义或因子库，因子与收益均由调用方传入。",
     "validation": "口径与反偷看护栏：walk-forward 窗口切分（测试窗严格晚于其训练窗）、无未来函数检查器（越界报错并点名首个越界点）、序列口径体检（缺失率与 warmup）。",
-    "decision_ledger": "决策账本（本组**有状态**：本地 SQLite 单文件，路径由 db_path 参数或 FD_QUANT_LEDGER_DB 指定）：追加式决策记录（幂等键 as_of+symbol+pack+skill，重复提交被拒并返回既有 decision_id；修订产生新行并以 revises 指回）、到期结算（原始收益 + 相对基准 alpha；基准按后缀映射 .SS→000001.SS / .SZ→399001.SZ / .HK→^HSI / .T→^N225 / 无后缀→SPY，可显式覆盖）、反思随结算存储但**绝不推送**、点内检索（只回结算日 ≤ as_of，同标的最多 5 条 + 跨标的教训最多 3 条）、按 pack 聚合（样本数 / 平均 alpha / 胜率 / 原始收益均值，空组显式返回 0）。与计算面同一纪律：不取数、不联网——价格与基准序列由调用方传入，持有期按交易日计。",
+    "decision_ledger": "决策账本（本组**有状态**：本地 SQLite 单文件，路径由 db_path 参数或 FD_QUANT_LEDGER_DB 指定）：追加式决策记录（幂等键 caller+as_of+symbol+pack+skill，重复提交被拒并返回既有 decision_id；记录按 caller 隔离，调用者只看到自己的判定，caller 由调用上下文解析、不接受入参声明；修订产生新行并以 revises 指回）、到期结算（原始收益 + 相对基准 alpha；基准按后缀映射 .SS→000001.SS / .SZ→399001.SZ / .HK→^HSI / .T→^N225 / 无后缀→SPY，可显式覆盖）、反思随结算存储但**绝不推送**、点内检索（只回结算日 ≤ as_of，同标的最多 5 条 + 跨标的教训最多 3 条）、按 pack 聚合（样本数 / 平均 alpha / 胜率 / 原始收益均值，空组显式返回 0）。与计算面同一纪律：不取数、不联网——价格与基准序列由调用方传入，持有期按交易日计。",
 }
 
 DESCRIPTION_TEMPLATE = (

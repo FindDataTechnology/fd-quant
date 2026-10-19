@@ -6,9 +6,14 @@ ChromaDB→BM25→全删演进史证明账本的查询是关系型过滤，不�
 
 表与键
 ------
-`decisions`：`decision_id` 主键 + `as_of / symbol / pack / skill / payload /
+`decisions`：`decision_id` 主键 + `caller / as_of / symbol / pack / skill / payload /
 target_weights / evidence / status / revises / revision_seq / created_at`。
-**幂等键**是 `(as_of, symbol, pack, skill)`。
+**幂等键**是 `(caller, as_of, symbol, pack, skill)`——**含调用者**。
+
+`caller` 是调用者标识（账本按它隔离，见 `fd_quant.caller`）。它由调用上下文解析，
+**不接受入参声明**：能由入参声明的"隔离"不是隔离，只是请调用方自觉遵守。隔离前
+的旧行在迁移中一律标为 `legacy`（归属未知），且不被任何具名调用者看到——归属未知
+的记录若对所有人可见，就是把无主样本灌进每个调用者的胜率与平均 alpha。
 
 `settlements`：`decision_id` 主键（一决策最多一条结算）+ 结算窗的价格、原始收益、
 基准（符号 + 映射来源 + 基准收益）、alpha、持有天数、反思。
@@ -18,9 +23,10 @@ target_weights / evidence / status / revises / revision_seq / created_at`。
 若把唯一性直接做成 `(as_of, symbol, pack, skill)` 的全表唯一约束，任何修订都必然撞键。
 解法是**两条部分唯一索引**：
 
-- `ux_decisions_initial`：`(as_of, symbol, pack, skill) WHERE revises IS NULL`
-  ——初始记录全表唯一。重复提交由**数据库**拒绝，而不是靠应用层"先查后插"。
-- `ux_decisions_revision`：`(as_of, symbol, pack, skill, revision_seq) WHERE revises IS NOT NULL`
+- `ux_decisions_initial`：`(caller, as_of, symbol, pack, skill) WHERE revises IS NULL`
+  ——初始记录在同一调用者内唯一。重复提交由**数据库**拒绝，而不是靠应用层"先查后插"。
+- `ux_decisions_revision`：`(caller, as_of, symbol, pack, skill, revision_seq)
+  WHERE revises IS NOT NULL`
   ——修订按同键的递增序号唯一，链是线性的（v1→v2→v3），且并发安全。
 - `CHECK` 约束把两者绑死：`revises IS NULL ⇔ revision_seq = 0`（不可能出现
   "无指针的 v2"或"指针存在却是 v0"的半态），且禁止自指。
@@ -61,6 +67,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
 from ..contracts.models import ContractError, validate
+from ..caller import LEGACY
 from .errors import LedgerError, RevisionConflict, UnknownDecision
 from .settlement import (
     DEFAULT_BENCHMARK_MAP,
@@ -82,6 +89,8 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS decisions (
         decision_id     TEXT PRIMARY KEY,
+        -- caller：调用者标识（账本按此隔离）。由调用上下文解析，不接受入参声明。
+        caller          TEXT NOT NULL DEFAULT 'anonymous',
         as_of           TEXT NOT NULL,
         symbol          TEXT NOT NULL,
         pack            TEXT NOT NULL,
@@ -103,15 +112,15 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     # 初始记录：幂等键全表唯一（重复提交的最终屏障）
     """
     CREATE UNIQUE INDEX IF NOT EXISTS ux_decisions_initial
-        ON decisions (as_of, symbol, pack, skill) WHERE revises IS NULL
+        ON decisions (caller, as_of, symbol, pack, skill) WHERE revises IS NULL
     """,
     # 修订：同键按递增序号唯一，线性链不可能出现兄弟分叉
     """
     CREATE UNIQUE INDEX IF NOT EXISTS ux_decisions_revision
-        ON decisions (as_of, symbol, pack, skill, revision_seq) WHERE revises IS NOT NULL
+        ON decisions (caller, as_of, symbol, pack, skill, revision_seq) WHERE revises IS NOT NULL
     """,
-    "CREATE INDEX IF NOT EXISTS ix_decisions_symbol_as_of ON decisions (symbol, as_of)",
-    "CREATE INDEX IF NOT EXISTS ix_decisions_pack_skill ON decisions (pack, skill)",
+    "CREATE INDEX IF NOT EXISTS ix_decisions_symbol_as_of ON decisions (caller, symbol, as_of)",
+    "CREATE INDEX IF NOT EXISTS ix_decisions_pack_skill ON decisions (caller, pack, skill)",
     """
     CREATE TABLE IF NOT EXISTS settlements (
         decision_id           TEXT PRIMARY KEY REFERENCES decisions(decision_id),
@@ -206,6 +215,36 @@ def _merge_settlement(decision_row: Any, settlement_row: Any) -> _Merged:
     return _Merged(merged)
 
 
+def _migrate_to_caller(con: sqlite3.Connection) -> None:
+    """把 caller 维度加进既有库（幂等：可重复执行）。
+
+    **为什么要重建表而不是 ALTER TABLE ADD COLUMN**：`caller` 要进唯一索引，而
+    SQLite 无法把列加进一个已存在的索引——只能按新 schema 建表再搬行。故这里显式
+    rename → 建新表 → INSERT ... SELECT（旧行的 caller 一律为 `LEGACY`）→ drop 旧表。
+
+    幂等的落点：`PRAGMA table_info` 里已经有 `caller` 就直接返回。第二次运行因此是
+    空操作，不会产生第二份数据，也不会因为"新表已存在"而报错。
+    """
+    cols = {r[1] for r in con.execute("PRAGMA table_info(decisions)")}
+    if not cols or "caller" in cols:
+        return  # 新库（建表已带 caller）或已迁移
+
+    con.execute("ALTER TABLE decisions RENAME TO decisions_old")
+    for stmt in SCHEMA_STATEMENTS:
+        if "CREATE TABLE IF NOT EXISTS decisions" in stmt or " ON decisions" in stmt:
+            con.execute(stmt)
+    # LEGACY：这些行产生于"账本还没有调用者维度"的时期。显式标注而非猜——运维据此
+    # 知道这批记录不属于任何已知调用者，也不会被任何调用者的检索看到。
+    con.execute(
+        "INSERT INTO decisions (decision_id, caller, as_of, symbol, pack, skill,"
+        " payload, target_weights, evidence, status, revises, revision_seq, created_at)"
+        " SELECT decision_id, ?, as_of, symbol, pack, skill, payload, target_weights,"
+        " evidence, status, revises, revision_seq, created_at FROM decisions_old",
+        (LEGACY,),
+    )
+    con.execute("DROP TABLE decisions_old")
+
+
 class LedgerStore:
     """决策账本：追加式记录（幂等 + 修订）+ 到期结算 + 点内检索 + 聚合。
 
@@ -255,6 +294,7 @@ class LedgerStore:
         con = self._connect()
         try:
             con.execute("BEGIN IMMEDIATE")
+            _migrate_to_caller(con)
             for stmt in SCHEMA_STATEMENTS:
                 con.execute(stmt)
             con.execute("COMMIT")
@@ -301,6 +341,7 @@ class LedgerStore:
     def record(
         self,
         *,
+        caller: str,
         as_of: str,
         symbol: str,
         pack: str,
@@ -313,7 +354,7 @@ class LedgerStore:
     ) -> dict:
         """追加一条决策：`payload` 是契约实例（`Rating`，可选关联 `TargetWeights`）。
 
-        - 幂等键 = `(as_of, symbol, pack, skill)`。同键重复提交**不抛异常**：
+        - 幂等键 = `(caller, as_of, symbol, pack, skill)`。同键重复提交**不抛异常**：
           返回既有 `decision_id` 且 `created=False`（spec 要求"被拒"与"给出既有 id"
           同时可见，抛异常会让后者无法表达），库行数逐字不变（结果带 `counts`）。
         - `revises=<decision_id>`：提交修订 → 新行、`revises` 指向被修订记录、
@@ -335,7 +376,7 @@ class LedgerStore:
         payload_json = _json_dumps(rating)
         evidence_json = _json_dumps(refs)
 
-        key = {"as_of": a, "symbol": sym, "pack": pk, "skill": sk}
+        key = {"caller": caller, "as_of": a, "symbol": sym, "pack": pk, "skill": sk}
         if revises is not None:
             return self._append_revision(
                 key, payload_json=payload_json, target_weights_json=tw_json,
@@ -356,11 +397,11 @@ class LedgerStore:
                                     reason="duplicate_key")
             decision_id = self.id_factory()
             con.execute(
-                "INSERT INTO decisions (decision_id, as_of, symbol, pack, skill, payload, "
+                "INSERT INTO decisions (decision_id, caller, as_of, symbol, pack, skill, payload, "
                 "target_weights, evidence, status, revises, revision_seq, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 0, ?)",
-                (decision_id, key["as_of"], key["symbol"], key["pack"], key["skill"],
-                 payload_json, target_weights_json, evidence_json, created_at),
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 0, ?)",
+                (decision_id, key["caller"], key["as_of"], key["symbol"], key["pack"],
+                 key["skill"], payload_json, target_weights_json, evidence_json, created_at),
             )
             return self._result(con, decision_id, created=True, reason="created")
 
@@ -400,11 +441,11 @@ class LedgerStore:
                                     reason="revision_duplicate")
             decision_id = self.id_factory()
             con.execute(
-                "INSERT INTO decisions (decision_id, as_of, symbol, pack, skill, payload, "
+                "INSERT INTO decisions (decision_id, caller, as_of, symbol, pack, skill, payload, "
                 "target_weights, evidence, status, revises, revision_seq, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
-                (decision_id, key["as_of"], key["symbol"], key["pack"], key["skill"],
-                 payload_json, target_weights_json, evidence_json,
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                (decision_id, key["caller"], key["as_of"], key["symbol"], key["pack"],
+                 key["skill"], payload_json, target_weights_json, evidence_json,
                  tip["decision_id"], int(tip["revision_seq"]) + 1, created_at),
             )
             return self._result(con, decision_id, created=True, reason="revision_created",
@@ -501,6 +542,7 @@ class LedgerStore:
     def retrieve(
         self,
         *,
+        caller: str,
         symbol: str,
         as_of: str,
         n_same: int = 5,
@@ -509,6 +551,8 @@ class LedgerStore:
     ) -> dict:
         """点内检索：只回**结算日 ≤ `as_of`** 的记录，按结算日倒序。
 
+        只回**本人（`caller`）**的记录——账本按调用者隔离，一个调用者的判定对另一个
+        调用者不可见（隔离落在 SQL 的 WHERE 里，不是应用层过滤）。
         同标的最多 `n_same` 条、跨标的教训最多 `m_cross` 条（默认 5 / 3，可配）。
         `as_of` 之后才结算的记录不出现在结果里——点内过滤落在 SQL 层，不依赖调用方
         自觉（design.md D5：这正是蓝本到 v0.6.0 才修的 #1251 号 bug）。
@@ -520,8 +564,8 @@ class LedgerStore:
         m = self._require_limit(m_cross, name="m_cross")
         pack_f = None if pack is None else self._require_text(pack, name="pack")
 
-        where = ["s.settlement_date <= ?"]
-        args: list[Any] = [a]
+        where = ["s.settlement_date <= ?", "d.caller = ?"]
+        args: list[Any] = [a, caller]
         if pack_f is not None:
             where.append("d.pack = ?")
             args.append(pack_f)
@@ -559,6 +603,7 @@ class LedgerStore:
     def stats_by_pack(
         self,
         *,
+        caller: str,
         as_of: str,
         packs: Optional[Sequence[str]] = None,
         group_by_skill: bool = False,
@@ -586,8 +631,9 @@ class LedgerStore:
             )]
 
         with self._read() as con:
-            keys = self._group_keys(con, requested=requested, group_by_skill=group_by_skill)
-            rows = self._settled_rows(con, as_of=a)
+            keys = self._group_keys(con, requested=requested, group_by_skill=group_by_skill,
+                                     caller=caller)
+            rows = self._settled_rows(con, as_of=a, caller=caller)
 
         groups: list[dict] = []
         for pack_name, skill_name in keys:
@@ -616,23 +662,25 @@ class LedgerStore:
 
     # ── 内部：行读取 ──────────────────────────────────────────
 
-    def _initial_row(self, con: sqlite3.Connection, *, as_of: str, symbol: str,
+    def _initial_row(self, con: sqlite3.Connection, *, caller: str, as_of: str, symbol: str,
                      pack: str, skill: str) -> Optional[sqlite3.Row]:
         return con.execute(
-            "SELECT * FROM decisions WHERE as_of = ? AND symbol = ? AND pack = ? AND skill = ? "
-            "AND revises IS NULL", (as_of, symbol, pack, skill),
+            "SELECT * FROM decisions WHERE caller = ? AND as_of = ? AND symbol = ? "
+            "AND pack = ? AND skill = ? AND revises IS NULL",
+            (caller, as_of, symbol, pack, skill),
         ).fetchone()
 
-    def _tip_row(self, con: sqlite3.Connection, *, as_of: str, symbol: str,
+    def _tip_row(self, con: sqlite3.Connection, *, caller: str, as_of: str, symbol: str,
                  pack: str, skill: str) -> sqlite3.Row:
         row = con.execute(
-            "SELECT * FROM decisions WHERE as_of = ? AND symbol = ? AND pack = ? AND skill = ? "
-            "ORDER BY revision_seq DESC LIMIT 1", (as_of, symbol, pack, skill),
+            "SELECT * FROM decisions WHERE caller = ? AND as_of = ? AND symbol = ? "
+            "AND pack = ? AND skill = ? ORDER BY revision_seq DESC LIMIT 1",
+            (caller, as_of, symbol, pack, skill),
         ).fetchone()
         if row is None:
             raise UnknownDecision(
-                f"no decision with key (as_of={as_of}, symbol={symbol}, pack={pack}, "
-                f"skill={skill}) in the ledger"
+                f"no decision with key (caller={caller}, as_of={as_of}, symbol={symbol}, "
+                f"pack={pack}, skill={skill}) in the ledger"
             )
         return row
 
@@ -753,7 +801,8 @@ class LedgerStore:
     # ── 内部：聚合 ────────────────────────────────────────────
 
     def _group_keys(self, con: sqlite3.Connection, *, requested: Optional[list[str]],
-                    group_by_skill: bool) -> list[tuple[str, Optional[str]]]:
+                    group_by_skill: bool,
+                    caller: str) -> list[tuple[str, Optional[str]]]:
         """组集合 = 已注册（decisions 表里出现过的）∪ 显式请求。
 
         显式请求一个**从未落过记录**的 pack 时给一行 (pack, None) 且样本数 0——这正是
@@ -762,11 +811,14 @@ class LedgerStore:
         """
         if group_by_skill:
             rows = con.execute(
-                "SELECT DISTINCT pack, skill FROM decisions ORDER BY pack, skill"
+                "SELECT DISTINCT pack, skill FROM decisions WHERE caller = ? ORDER BY pack, skill",
+                (caller,),
             ).fetchall()
             keys: list[tuple[str, Optional[str]]] = [(r["pack"], r["skill"]) for r in rows]
         else:
-            rows = con.execute("SELECT DISTINCT pack FROM decisions ORDER BY pack").fetchall()
+            rows = con.execute(
+                "SELECT DISTINCT pack FROM decisions WHERE caller = ? ORDER BY pack", (caller,)
+            ).fetchall()
             keys = [(r["pack"], None) for r in rows]
         if requested:
             known = {k[0] for k in keys}
@@ -781,7 +833,8 @@ class LedgerStore:
                 out.append(k)
         return sorted(out, key=lambda k: (k[0], k[1] or ""))
 
-    def _settled_rows(self, con: sqlite3.Connection, *, as_of: str) -> list[dict]:
+    def _settled_rows(self, con: sqlite3.Connection, *, as_of: str,
+                      caller: str) -> list[dict]:
         """统计口径内的全部已结算行（结算日 ≤ as_of）。
 
         **刻意不在 SQL 层按 `packs` 过滤**：`packs` 参数决定的是"要出现哪些组"，
@@ -791,7 +844,8 @@ class LedgerStore:
         rows = con.execute(
             "SELECT d.pack, d.skill, s.holding_days, s.raw_return, s.alpha "
             "FROM decisions d JOIN settlements s ON s.decision_id = d.decision_id "
-            "WHERE d.status = 'settled' AND s.settlement_date <= ?", (as_of,),
+            "WHERE d.status = 'settled' AND s.settlement_date <= ? AND d.caller = ?",
+            (as_of, caller),
         ).fetchall()
         return [
             {

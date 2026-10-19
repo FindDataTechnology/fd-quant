@@ -15,6 +15,9 @@ import pytest
 import ledgerdata as ld
 from fd_quant.compute.portfolio import summarize_return
 from fd_quant.ledger import LedgerStore, SettlementRefused, UnknownDecision
+
+#: 单用户本地账本场景的测试调用者（隔离新增维度后必须显式给出）
+CALLER = "test-caller"
 from fd_quant.ledger.settlement import (
     DEFAULT_BENCHMARK_MAP,
     build_series,
@@ -35,7 +38,7 @@ def store(tmp_path) -> LedgerStore:
 def _record(store: LedgerStore, *, symbol: str = SYMBOL, as_of: str = "2025-01-06",
             side: str = "buy", pack: str = ld.PACK, skill: str = ld.SKILL) -> dict:
     return store.record(
-        as_of=as_of, symbol=symbol, pack=pack, skill=skill,
+        caller=CALLER, as_of=as_of, symbol=symbol, pack=pack, skill=skill,
         payload=ld.rating(as_of, symbol, side=side, pack=pack, skill=skill),
     )
 
@@ -391,7 +394,7 @@ def test_status_transitions_from_pending_to_settled_and_fields_are_queryable(sto
     before = store.get(r["decision_id"])
     assert before["status"] == "pending"
     assert before["settlement"] is None
-    assert store.retrieve(symbol=SYMBOL, as_of="2099-01-01")["counts"]["total"] == 0
+    assert store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2099-01-01")["counts"]["total"] == 0
 
     _settle(store, r["decision_id"], reflection="持有期内无新信息，判定未变。")
     after = store.get(r["decision_id"])
@@ -426,8 +429,8 @@ def test_settlement_output_is_json_serialisable_without_nan(store):
     assert "NaN" not in text and "Infinity" not in text
     item = store.get(r["decision_id"])
     json.dumps(item, allow_nan=False)
-    json.dumps(store.retrieve(symbol=SYMBOL, as_of="2099-01-01"), allow_nan=False)
-    json.dumps(store.stats_by_pack(as_of="2099-01-01"), allow_nan=False)
+    json.dumps(store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2099-01-01"), allow_nan=False)
+    json.dumps(store.stats_by_pack(caller=CALLER, as_of="2099-01-01"), allow_nan=False)
 
 
 def test_settled_at_is_recorded_but_not_asserted_for_equality_across_runs(store):

@@ -14,6 +14,9 @@ import pytest
 import ledgerdata as ld
 from fd_quant.ledger import LedgerStore, SettlementRefused
 
+#: 单用户本地账本场景的测试调用者（隔离新增维度后必须显式给出）
+CALLER = "test-caller"
+
 SYMBOL = "600519.SS"
 
 
@@ -24,7 +27,7 @@ def store(tmp_path) -> LedgerStore:
 
 def _record(store: LedgerStore, *, as_of: str = "2025-01-06", symbol: str = SYMBOL,
             pack: str = ld.PACK, skill: str = ld.SKILL) -> dict:
-    return store.record(as_of=as_of, symbol=symbol, pack=pack, skill=skill,
+    return store.record(caller=CALLER, as_of=as_of, symbol=symbol, pack=pack, skill=skill,
                         payload=ld.rating(as_of, symbol, pack=pack, skill=skill))
 
 
@@ -83,7 +86,7 @@ def test_three_ten_and_five_day_settlements_coexist_and_are_grouped_apart(store)
                      symbol_prices=[100.0] * hd + [110.0],
                      benchmark_dates=dates, benchmark_prices=[1000.0] * (hd + 1),
                      as_of=dates[-1], holding_days=hd)
-    out = store.stats_by_pack(as_of="2025-12-31", group_by_holding=True,
+    out = store.stats_by_pack(caller=CALLER, as_of="2025-12-31", group_by_holding=True,
                               holding_days=[3, 5, 10])
     rows = {g["holding_days"]: g for g in out["rows"] if g["pack"] == ld.PACK}
     assert set(rows) == {3, 5, 10}
@@ -192,13 +195,13 @@ def test_reflection_present_and_absent_coexist_in_one_ledger(store):
     store.settle(decision_id=b["decision_id"], symbol_dates=d2,
                  symbol_prices=[100.0] * 5 + [110.0], benchmark_dates=d2,
                  benchmark_prices=[1000.0] * 6, as_of=d2[-1])
-    stats = store.stats_by_pack(as_of="2025-12-31")
+    stats = store.stats_by_pack(caller=CALLER, as_of="2025-12-31")
     row = next(g for g in stats["rows"] if g["pack"] == ld.PACK)
     assert row["samples"] == 2
     assert row["mean_alpha"] == pytest.approx(0.10)
     assert "带反思的一条。" not in json.dumps(stats, ensure_ascii=False)
     # 反思只在点内检索里带出，且两条各带自己的那一份
-    items = store.retrieve(symbol="600519.SS", as_of="2025-12-31")
+    items = store.retrieve(caller=CALLER, symbol="600519.SS", as_of="2025-12-31")
     reflections = {x["settlement"]["reflection"] for x in items["same_symbol"]}
     reflections |= {x["settlement"]["reflection"] for x in items["cross_symbol"]}
     assert reflections == {"带反思的一条。", None}
@@ -225,7 +228,7 @@ def test_reflection_can_be_added_only_at_first_settlement(store):
 
 def test_empty_ledger_retrieval_returns_empty_arrays(store):
     """空账本检索：两个空数组、计数为 0、不报错。"""
-    out = store.retrieve(symbol=SYMBOL, as_of="2025-12-31", n_same=5, m_cross=3)
+    out = store.retrieve(caller=CALLER, symbol=SYMBOL, as_of="2025-12-31", n_same=5, m_cross=3)
     assert out["same_symbol"] == [] and out["cross_symbol"] == []
     assert out["counts"] == {"same_symbol": 0, "cross_symbol": 0, "total": 0}
     json.dumps(out, allow_nan=False)
@@ -233,7 +236,7 @@ def test_empty_ledger_retrieval_returns_empty_arrays(store):
 
 def test_empty_ledger_stats_with_no_pack_filter_returns_no_rows(store):
     """空账本、未指定 pack → 无组可出行（行集为空但结构完整）。"""
-    out = store.stats_by_pack(as_of="2025-12-31")
+    out = store.stats_by_pack(caller=CALLER, as_of="2025-12-31")
     assert out["rows"] == []
     assert out["registered_packs"] == []
     assert out["counts"] == {"rows": 0, "settled_rows_in_scope": 0}
@@ -242,7 +245,7 @@ def test_empty_ledger_stats_with_no_pack_filter_returns_no_rows(store):
 
 def test_empty_ledger_stats_with_requested_packs_returns_zero_rows(store):
     """空账本、显式请求 pack → 每个 pack 一行 samples=0（"从未落账"同样显式可见）。"""
-    out = store.stats_by_pack(as_of="2025-12-31", packs=["pack-a", "pack-b", "pack-c"])
+    out = store.stats_by_pack(caller=CALLER, as_of="2025-12-31", packs=["pack-a", "pack-b", "pack-c"])
     assert [g["pack"] for g in out["rows"]] == ["pack-a", "pack-b", "pack-c"]
     assert all(g["samples"] == 0 and g["mean_alpha"] is None for g in out["rows"])
 

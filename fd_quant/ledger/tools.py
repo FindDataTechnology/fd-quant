@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional, Sequence
 
+from ..caller import resolve_caller
 from ..compute import ToolSpec
 from .store import LedgerStore
 from .settlement import DEFAULT_HOLDING_DAYS
@@ -62,14 +63,18 @@ def record_decision(
     revises: Optional[str] = None,
     now: Optional[str] = None,
 ) -> dict:
-    """追加一条决策记录到本地账本（幂等键 as_of + symbol + pack + skill）。
+    """追加一条决策记录到本地账本（幂等键 caller + as_of + symbol + pack + skill）。
 
     落账即审计：`payload` 是契约实例（`Rating` JSON 对象，字段同 schemas/rating.schema.json），
     账本原样存下并在查回时逐字给予；`payload.as_of` 必须等于 `as_of`、`payload.subject`
     必须等于 `symbol`、`payload.producer.pack/skill` 必须等于 `pack`/`skill`（不一致即拒绝
     并同时点名两边——账本不替调用方挑一个当真）。
 
-    幂等：同一 (as_of, symbol, pack, skill) 重复提交**被拒绝但返回既有 decision_id**
+    调用者隔离：`caller` **不是入参**——它由调用上下文解析（HTTP 用 Authorization 的
+    Bearer 指纹，stdio 用环境变量 FD_QUANT_CALLER，都没有则是 anonymous）。故调用方
+    无法声称自己是别人：伪造的入参身份不存在，因为根本没有这个入参。
+
+    幂等：同一 (caller, as_of, symbol, pack, skill) 重复提交**被拒绝但返回既有 decision_id**
     （返回里 created=false、reason="duplicate_key"），记录总数逐字不变——这是"每个决策只
     算一次账"的屏障，重复记录会静默污染胜率与平均 alpha。修订：传 revises=<既有 decision_id>
     发一条**新记录**（created=true、revises 指回、revision_seq 递增），被修订记录逐字不改；
@@ -90,8 +95,9 @@ def record_decision(
     """
     store = _store(db_path)
     result = store.record(
-        as_of=as_of, symbol=symbol, pack=pack, skill=skill, payload=payload,
-        target_weights=target_weights, evidence=evidence, revises=revises, now=now,
+        caller=resolve_caller(), as_of=as_of, symbol=symbol, pack=pack, skill=skill,
+        payload=payload, target_weights=target_weights, evidence=evidence, revises=revises,
+        now=now,
     )
     return _envelope("record_decision", as_of, store, result)
 
@@ -188,7 +194,8 @@ def retrieve_decisions(
       假设：账本不取数——任何价格 / 基准序列都由调用方传入；持有期按交易日计，交易日历由传入序列的日期集合隐式给出（账本不内置日历）。
     """
     store = _store(db_path)
-    result = store.retrieve(symbol=symbol, as_of=as_of, n_same=n_same, m_cross=m_cross, pack=pack)
+    result = store.retrieve(caller=resolve_caller(), symbol=symbol, as_of=as_of, n_same=n_same,
+                            m_cross=m_cross, pack=pack)
     return _envelope("retrieve_decisions", as_of, store, result)
 
 
@@ -226,7 +233,7 @@ def summarize_pack_performance(
     """
     store = _store(db_path)
     result = store.stats_by_pack(
-        as_of=as_of, packs=packs, group_by_skill=group_by_skill,
+        caller=resolve_caller(), as_of=as_of, packs=packs, group_by_skill=group_by_skill,
         group_by_holding=group_by_holding, holding_days=holding_days,
     )
     return _envelope("summarize_pack_performance", as_of, store, result)
