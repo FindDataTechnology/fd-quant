@@ -29,7 +29,7 @@ REPO = Path(__file__).resolve().parent.parent
 MANIFEST = REPO / "tool-surface.json"
 
 SERVER_NAME = "fd-quant"
-ENTRY_PATH = "/fd-quant-compute"
+ENTRY_PATH = "/fd-quant"
 
 #: 族分组 → 面向读者的组说明（工具名由 all_surface_tools() 提供，不在此重复）
 GROUP_DESCRIPTIONS = {
