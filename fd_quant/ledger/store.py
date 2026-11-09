@@ -320,6 +320,34 @@ def _merge_settlement(decision_row: Any, settlement_row: Any) -> _Merged:
     return _Merged(merged)
 
 
+def build_premise_invalidated_event(
+    *, decision_id: str, precondition_index: int, metric_ref: str,
+    observed_value: Optional[float], comparator: str, threshold: float,
+    evaluated_at: str, series_fingerprint: str,
+) -> dict:
+    """构造 `premise_invalidated` 事件（add-decision-consistency-and-premise-watch 3.3）。
+
+    纯函数：不评测、不落库、不通知。六个字段是"三十秒内可回答"的最小事实——
+    缺任何一个，看事件的人就得去翻账本才能知道该重新看哪个判断。
+
+    注意 `observed_value` 允许为 None（指标点缺失也是一种失效形态），但
+    `series_fingerprint` 不允许——没有指纹，"当时凭什么判失效"就无法复核。
+    """
+    if not series_fingerprint:
+        raise ValueError("series_fingerprint 必填：没有指纹的失效判定无法复核")
+    return {
+        "event": "premise_invalidated",
+        "decision_id": decision_id,
+        "precondition_index": precondition_index,
+        "metric_ref": metric_ref,
+        "observed_value": observed_value,
+        "comparator": comparator,
+        "threshold": threshold,
+        "evaluated_at": evaluated_at,
+        "series_fingerprint": series_fingerprint,
+    }
+
+
 def _compare(observed: float, comparator: str, threshold: float) -> bool:
     """阈值比较。`eq`/`neq` 用容差判等——浮点严格相等几乎总是错的。"""
     tol = 1e-9
@@ -877,13 +905,26 @@ class LedgerStore:
                     verdict = "hit" if _compare(observed, comparator, thr) else "miss"
                     reason = "settled"
 
+            # metric_ref 的真源是决策 payload 的 expected_outcome.metric_ref。
+            # 此前用 subject 兜底：subject 是"判断的对象"（门店），metric_ref 是
+            # "结算所依据的指标"——两者语义不同，兜底会把门店 id 写进指标位，
+            # 指纹对不上、复核也找不到数据源。
+            payload = _json_loads(row["payload"]) or {}
+            metric_ref = ((payload.get("expected_outcome") or {}).get("metric_ref")
+                          if isinstance(payload.get("expected_outcome"), dict)
+                          else None)
+            if not metric_ref:
+                raise LedgerError(
+                    f"决策 {did} 的 payload 缺少 expected_outcome.metric_ref；"
+                    "阈值结算必须知道依据哪个指标"
+                )
             con.execute(
                 "INSERT INTO settlements (decision_id, settled_at, settlement_date, rule_id, "
                 "verdict, metric_ref, observed_value, comparator, threshold, "
                 "series_fingerprint, reflection)"
                 " VALUES (?, ?, ?, 'metric_threshold', ?, ?, ?, ?, ?, ?, ?)",
                 (did, settled_at, end, verdict,
-                 (row["subject_key"] or row["symbol"]), observed, comparator, thr,
+                 metric_ref, observed, comparator, thr,
                  fingerprint, reflection),
             )
             con.execute("UPDATE decisions SET status = 'settled' WHERE decision_id = ?", (did,))

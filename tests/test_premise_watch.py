@@ -161,3 +161,35 @@ def test_evidence_returned():
     assert len(ids) == 2 and len(set(ids)) == 2
     assert all("preconditions_monitorable" in i for i in ids)
     assert all(e["source"].startswith("fd-quant:") for e in out["evidence"])
+
+
+# --- 3.3 premise_invalidated 事件六字段 --------------------------------------
+
+def test_premise_invalidated_event_carries_all_six_fields():
+    from fd_quant.ledger.store import build_premise_invalidated_event
+
+    ev = build_premise_invalidated_event(
+        decision_id="d-1", precondition_index=0,
+        metric_ref="financials.gross_margin", observed_value=0.31,
+        comparator="gte", threshold=0.42, evaluated_at="2026-11-10T08:00:00",
+        series_fingerprint="abc123")
+
+    assert ev["event"] == "premise_invalidated"
+    assert ev["decision_id"] == "d-1"
+    assert ev["precondition_index"] == 0
+    assert ev["observed_value"] == 0.31
+    assert ev["threshold"] == 0.42
+    assert ev["evaluated_at"] == "2026-11-10T08:00:00"
+    assert ev["series_fingerprint"] == "abc123"
+
+
+def test_premise_invalidated_without_fingerprint_refused():
+    from fd_quant.ledger.store import build_premise_invalidated_event
+
+    with pytest.raises(ValueError) as exc:
+        build_premise_invalidated_event(
+            decision_id="d-1", precondition_index=0,
+            metric_ref="m", observed_value=None, comparator="gte",
+            threshold=1, evaluated_at="2026-11-10", series_fingerprint="")
+
+    assert "指纹" in str(exc.value), "没有指纹的失效判定无法复核，必须拒绝"
