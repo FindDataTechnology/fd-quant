@@ -313,3 +313,37 @@ def test_items_is_a_list_never_none():
         sectors={"A": "x"}, equity_series=[("2026-06-01", 100.0), ("2026-06-02", 100.0)],
     )
     assert out["items"] == [] and isinstance(out["items"], list)
+
+
+# ------------------- 边界补钉：三个判据各自的"恰好等于上限"（change4 3.4）
+
+
+def test_per_symbol_exactly_at_limit_does_not_breach():
+    """单票恰好等于上限不触达（判据是严格大于）。
+
+    **这条是补的，而且是翻转实验抓出来的**：原先只有行业集中度有"恰好等于上限"的用例，
+    单票没有——于是把 `>` 改成 `>=` 时，全套测试仍然全绿。没有这条，那条判据的边界
+    就没有任何东西钉着，"改一处"也不会有人发现。
+    """
+    out = _gate(weights={"A": 0.3}, thresholds={**GOOD, "per_symbol_max": 0.3})
+    assert not [i for i in out["items"] if i["kind"] == "per_symbol"]
+    assert out["breached"] is False
+
+
+def test_per_symbol_just_over_limit_breaches():
+    out = _gate(weights={"A": 0.3000001}, thresholds={**GOOD, "per_symbol_max": 0.3})
+    assert [i for i in out["items"] if i["kind"] == "per_symbol"]
+
+
+def test_drawdown_exactly_at_limit_does_not_breach():
+    """回撤恰好等于上限不触达。构造：峰值 100、谷值 90 → 回撤 0.10；上限 0.10。"""
+    out = _gate(equity_series=[("2026-06-01", 100.0), ("2026-06-02", 90.0)],
+                thresholds={**GOOD, "drawdown_max": 0.10})
+    assert not [i for i in out["items"] if i["kind"] == "drawdown"]
+
+
+def test_daily_loss_exactly_at_limit_does_not_breach():
+    """单日亏损恰好等于上限不触达。构造：100 → 95，跌幅 0.05；上限 0.05。"""
+    out = _gate(equity_series=[("2026-06-01", 100.0), ("2026-06-02", 95.0)],
+                thresholds={**GOOD, "daily_loss_max": 0.05})
+    assert not [i for i in out["items"] if i["kind"] == "daily_loss"]
