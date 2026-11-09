@@ -69,7 +69,7 @@ from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
 from ..contracts.models import ContractError, validate
 from ..caller import LEGACY
-from .errors import LedgerError, RevisionConflict, UnknownDecision
+from .errors import LedgerError, RevisionConflict, SettlementRefused, UnknownDecision
 from .settlement import (
     DEFAULT_BENCHMARK_MAP,
     DEFAULT_HOLDING_DAYS,
@@ -107,6 +107,9 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         skill           TEXT NOT NULL,
         payload         TEXT NOT NULL,
         target_weights  TEXT,
+        -- 取价路径的序列引用（add-price-supply-and-caliber 4.5）：落账时由调用方传入，
+        -- 结算时与本次传入的 ref 比对——口径不一致在 warn 下标记不可比、refuse 下拒绝。
+        series_ref      TEXT,
         evidence        TEXT NOT NULL,
         status          TEXT NOT NULL CHECK (status IN ('pending', 'settled')),
         revises         TEXT REFERENCES decisions(decision_id),
@@ -490,6 +493,18 @@ def _migrate_to_decision_v2(con: sqlite3.Connection) -> None:
         con.execute("DROP TABLE settlements_old_v2")
 
 
+def _migrate_to_series_ref(con: sqlite3.Connection) -> None:
+    """给既有库补 `series_ref` 列（add-price-supply-and-caliber task 4.5）。
+
+    列可空、无索引 → `ALTER TABLE ADD COLUMN` 即可，不必重建表。幂等：列已在就返回。
+    新库由建表语句直接带该列，故这一步对新库是空操作。
+    """
+    cols = {r[1] for r in con.execute("PRAGMA table_info(decisions)")}
+    if not cols or "series_ref" in cols:
+        return
+    con.execute("ALTER TABLE decisions ADD COLUMN series_ref TEXT")
+
+
 class LedgerStore:
     """决策账本：追加式记录（幂等 + 修订）+ 到期结算 + 点内检索 + 聚合。
 
@@ -543,6 +558,7 @@ class LedgerStore:
             # → 搬行"，新库直接返回。索引必须等迁移完成后再建，否则旧表上会缺列。
             _migrate_to_caller(con)
             _migrate_to_portfolio(con)
+            _migrate_to_series_ref(con)
             _migrate_to_decision_v2(con)
             for stmt in SCHEMA_STATEMENTS:
                 con.execute(stmt)
@@ -600,6 +616,7 @@ class LedgerStore:
         portfolio_key: Optional[str] = None,
         target_weights: Any = None,
         evidence: Optional[Sequence[str]] = None,
+        series_ref: Optional[Any] = None,
         revises: Optional[str] = None,
         now: Optional[str] = None,
     ) -> dict:
@@ -652,6 +669,7 @@ class LedgerStore:
         checked = self._check_payload(
             payload, as_of=a, symbol=subject, pack=pk, skill=sk, record_kind=kind
         )
+        ref_json = self._check_series_ref(series_ref)
         tw_json = self._check_target_weights(target_weights)
         refs = self._check_evidence(evidence, payload=checked)
         payload_json = _json_dumps(checked)
@@ -661,6 +679,7 @@ class LedgerStore:
             "caller": caller, "record_kind": kind, "as_of": a, "subject": subject,
             "symbol": sym, "portfolio_key": (subject if kind == "portfolio" else None),
             "pack": pk, "skill": sk,
+            "series_ref_json": ref_json,
         }
         if revises is not None:
             return self._append_revision(
@@ -683,12 +702,12 @@ class LedgerStore:
             decision_id = self.id_factory()
             con.execute(
                 "INSERT INTO decisions (decision_id, caller, record_kind, as_of, symbol,"
-                " portfolio_key, pack, skill, payload, target_weights, evidence, status,"
-                " revises, revision_seq, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 0, ?)",
+                " portfolio_key, pack, skill, payload, target_weights, series_ref, evidence,"
+                " status, revises, revision_seq, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 0, ?)",
                 (decision_id, key["caller"], key["record_kind"], key["as_of"], key["symbol"],
                  key["portfolio_key"], key["pack"], key["skill"], payload_json,
-                 target_weights_json, evidence_json, created_at),
+                 target_weights_json, key.get("series_ref_json"), evidence_json, created_at),
             )
             return self._result(con, decision_id, created=True, reason="created")
 
@@ -729,12 +748,12 @@ class LedgerStore:
             decision_id = self.id_factory()
             con.execute(
                 "INSERT INTO decisions (decision_id, caller, record_kind, as_of, symbol,"
-                " portfolio_key, pack, skill, payload, target_weights, evidence, status,"
-                " revises, revision_seq, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                " portfolio_key, pack, skill, payload, target_weights, series_ref, evidence,"
+                " status, revises, revision_seq, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
                 (decision_id, key["caller"], key["record_kind"], key["as_of"], key["symbol"],
                  key["portfolio_key"], key["pack"], key["skill"], payload_json,
-                 target_weights_json, evidence_json,
+                 target_weights_json, key.get("series_ref_json"), evidence_json,
                  tip["decision_id"], int(tip["revision_seq"]) + 1, created_at),
             )
             return self._result(con, decision_id, created=True, reason="revision_created",
@@ -754,6 +773,7 @@ class LedgerStore:
         reflection: Optional[str] = None,
         benchmark_symbol: Optional[str] = None,
         holding_days: Optional[int] = None,
+        series_ref: Optional[Any] = None,
         now: Optional[str] = None,
     ) -> dict:
         """到期结算一条决策：价格序列由**调用方传入**，账本不取数、不联网。
@@ -787,6 +807,10 @@ class LedgerStore:
                                                reason="duplicate_settlement",
                                                reflection_ignored=ignored)
 
+            # 结算侧口径断言（add-price-supply-and-caliber 4.5）：
+            # 落账时记了 ref、本次结算也带了 ref → 比对；不一致按开关处置。
+            caliber = self._assert_caliber(row, series_ref)
+
             bench = resolve_benchmark(
                 row["symbol"], explicit=benchmark_symbol, mapping=self.benchmark_map
             )
@@ -817,8 +841,10 @@ class LedgerStore:
             )
             con.execute("UPDATE decisions SET status = 'settled' WHERE decision_id = ?", (did,))
             stored = self._settlement_row(con, did)
-            return self._settlement_result(con, stored, created=True, reason="settled",
-                                           reflection_ignored=False)
+            out = self._settlement_result(con, stored, created=True, reason="settled",
+                                          reflection_ignored=False)
+            out["caliber"] = caliber
+            return out
 
     def settle_metric_threshold(
         self,
@@ -1357,7 +1383,8 @@ class LedgerStore:
 
     def _initial_row(self, con: sqlite3.Connection, *, caller: str, record_kind: str,
                      as_of: str, subject: str, symbol: Optional[str] = None,
-                     portfolio_key: Optional[str] = None, pack: str, skill: str
+                     portfolio_key: Optional[str] = None, pack: str, skill: str,
+                     series_ref_json: Any = None,
                      ) -> Optional[sqlite3.Row]:
         """按幂等键取初始行。主体用 `subject` 统一寻址——单体走 symbol，组合走 portfolio_key。"""
         return con.execute(
@@ -1369,7 +1396,8 @@ class LedgerStore:
 
     def _tip_row(self, con: sqlite3.Connection, *, caller: str, record_kind: str,
                  as_of: str, subject: str, symbol: Optional[str] = None,
-                 portfolio_key: Optional[str] = None, pack: str, skill: str
+                 portfolio_key: Optional[str] = None, pack: str, skill: str,
+                 series_ref_json: Any = None,
                  ) -> sqlite3.Row:
         row = con.execute(
             "SELECT * FROM decisions WHERE caller = ? AND record_kind = ? AND as_of = ? "
@@ -1452,6 +1480,8 @@ class LedgerStore:
             "created_at": row["created_at"],
             "payload": _json_loads(row["payload"]),
             "target_weights": _json_loads(row["target_weights"]),
+            # 取价口径出处：结算与复盘要能回答"这条判定用的是哪批价格"。
+            "series_ref": _json_loads(row["series_ref"]) if "series_ref" in row.keys() else None,
             "evidence": _json_loads(row["evidence"]),
             "settlement": settlement,
         }
@@ -1740,6 +1770,78 @@ class LedgerStore:
                     f"ledger's {field}={given!r}",
                 )
         return payload
+
+    @staticmethod
+    def _check_series_ref(series_ref: Any) -> Optional[str]:
+        """校验并序列化取价路径的 `PriceSeriesRef`（可选）。
+
+        为什么在账本里校验而不是信调用方：口径是**账本的记录维度**，一旦落进库就要能被
+        结算时比对。不合法就当场拒绝，不留一个"看起来有 ref 其实缺字段"的行。
+        """
+        if series_ref is None:
+            return None
+        from ..contracts.models import check_price_series_ref
+
+        payload = series_ref.to_dict() if hasattr(series_ref, "to_dict") else series_ref
+        errs = check_price_series_ref(payload)
+        if errs:
+            raise ContractError(errs[0]["path"], errs[0]["reason"])
+        return _json_dumps(payload)
+
+    @staticmethod
+    def _assert_caliber(row: Any, series_ref: Any) -> dict:
+        """比对落账 ref 与结算 ref；按 `PRICE_CALIBER_ENFORCEMENT` 决定 warn 还是 refuse。
+
+        三态结论（这是本方法的全部意义）：
+          - `comparable: true`  → 两侧同源同口径，数字可直接比
+          - `comparable: false` → 两侧不同源/不同口径，或仅一侧有 ref → **不可比**，
+            `warn` 下产出告警、`refuse` 下抛错
+          - `checked: false`    → 两侧都没有 ref（历史记录），既不告警也不判定为可比
+
+        **为什么"仅一侧有 ref"也算不可比**：只有一侧能说出自己的源与锚点，就没有办法
+        断言两边是同一批数据；把它当"可比"等于默认缺失的那侧与另一侧同源——那是本仓
+        最忌讳的那类推断（读不到当成不存在）。
+
+        **为什么不把 `warn` 当成足够**：设计里 `warn` 只是迁移期的观察窗；收敛完成后必须
+        切 `refuse`，否则开关会变成永久的静默降级口。探针（task 6.3）会断言该值。
+        """
+        import os
+
+        mode = (os.environ.get("PRICE_CALIBER_ENFORCEMENT") or "warn").strip().lower()
+        if mode not in ("warn", "refuse"):
+            raise LedgerError(
+                f"PRICE_CALIBER_ENFORCEMENT={mode!r} must be 'warn' or 'refuse'"
+            )
+
+        recorded = _json_loads(row["series_ref"]) if "series_ref" in row.keys() else None
+        incoming = (series_ref.to_dict() if hasattr(series_ref, "to_dict") else series_ref)
+
+        if recorded is None and incoming is None:
+            return {"checked": False, "comparable": None, "mode": mode,
+                    "reason": "neither side carries a series_ref (legacy record)"}
+
+        if recorded is None or incoming is None:
+            missing = "record" if recorded is None else "settlement"
+            msg = (f"series_ref present only on the {('settlement' if missing == 'record' else 'record')} "
+                   f"side; cannot assert the two price series share one caliber")
+            if mode == "refuse":
+                raise SettlementRefused(msg)
+            return {"checked": True, "comparable": False, "mode": mode,
+                    "reason": msg, "warning": True}
+
+        diffs = [k for k in ("source_id", "adjustment", "adjustment_anchor", "as_of_max")
+                 if (recorded or {}).get(k) != (incoming or {}).get(k)]
+        if not diffs:
+            return {"checked": True, "comparable": True, "mode": mode,
+                    "source_id": (recorded or {}).get("source_id")}
+
+        detail = {k: {"recorded": (recorded or {}).get(k), "settlement": (incoming or {}).get(k)}
+                  for k in diffs}
+        msg = f"caliber mismatch on {', '.join(diffs)}; results are not comparable"
+        if mode == "refuse":
+            raise SettlementRefused(msg + f" ({detail})")
+        return {"checked": True, "comparable": False, "mode": mode, "reason": msg,
+                "difference": detail, "warning": True}
 
     @staticmethod
     def _check_target_weights(target_weights: Any) -> Optional[str]:

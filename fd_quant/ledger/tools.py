@@ -62,6 +62,7 @@ def record_decision(
     db_path: Optional[str] = None,
     target_weights: Optional[Mapping[str, Any]] = None,
     evidence: Optional[Sequence[str]] = None,
+    series_ref: Optional[Mapping[str, Any]] = None,
     revises: Optional[str] = None,
     now: Optional[str] = None,
 ) -> dict:
@@ -105,7 +106,8 @@ def record_decision(
     result = store.record(
         caller=resolve_caller(), as_of=as_of, symbol=symbol, pack=pack, skill=skill,
         payload=payload, record_kind=record_kind, portfolio_key=portfolio_key,
-        target_weights=target_weights, evidence=evidence, revises=revises, now=now,
+        target_weights=target_weights, evidence=evidence, series_ref=series_ref,
+        revises=revises, now=now,
     )
     return _envelope("record_decision", as_of, store, result)
 
@@ -121,6 +123,7 @@ def settle_decision(
     reflection: Optional[str] = None,
     benchmark_symbol: Optional[str] = None,
     holding_days: Optional[int] = None,
+    series_ref: Optional[Mapping[str, Any]] = None,
     now: Optional[str] = None,
 ) -> dict:
     """到期结算一条决策：算原始收益、基准收益与 alpha，并落库（幂等）。
@@ -167,6 +170,7 @@ def settle_decision(
         decision_id=decision_id, symbol_dates=symbol_dates, symbol_prices=symbol_prices,
         benchmark_dates=benchmark_dates, benchmark_prices=benchmark_prices, as_of=as_of,
         reflection=reflection, benchmark_symbol=benchmark_symbol, holding_days=holding_days,
+        series_ref=series_ref,
         now=now,
     )
     return _envelope("settle_decision", as_of, store, result)

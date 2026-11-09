@@ -2656,6 +2656,9 @@
                   "revision_seq": {
                     "type": "integer"
                   },
+                  "series_ref": {
+                    "type": "null"
+                  },
                   "settlement": {
                     "type": "object"
                   },
@@ -2693,6 +2696,7 @@
                   "record_kind",
                   "revises",
                   "revision_seq",
+                  "series_ref",
                   "settlement",
                   "skill",
                   "status",
