@@ -1289,6 +1289,9 @@
         "params": {
           "type": "object"
         },
+        "return_caliber": {
+          "type": "string"
+        },
         "used_indices": {
           "type": "array",
           "items": {
@@ -1310,6 +1313,7 @@
         "n_dropped",
         "n_observations",
         "params",
+        "return_caliber",
         "used_indices",
         "warmup"
       ],

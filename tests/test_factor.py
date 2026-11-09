@@ -701,7 +701,10 @@ def test_params_echo_effective_values_including_defaults():
     as_of = qd.of_dates_max(ds)
 
     r_ic = compute_information_coefficient(ds, factor, rets, as_of)
-    assert r_ic["params"] == {"method": "pearson", "min_observations": 5}
+    # return_caliber 自 deepen-trading-benchmark-and-risk 5.3 起进 params：
+    # IC 的口径算不出来，只能由调用方声明；默认 raw（不谎报成超额）。
+    assert r_ic["params"] == {"method": "pearson", "min_observations": 5,
+                              "return_caliber": "raw"}
 
     r_ic_s = compute_information_coefficient(ds, factor, rets, as_of, method="Spearman")
     assert r_ic_s["params"]["method"] == "spearman"       # 大小写不敏感，回显小写

@@ -291,6 +291,7 @@ def compute_information_coefficient(
     as_of: str,
     method: str = "pearson",
     min_observations: int = DEFAULT_MIN_OBSERVATIONS,
+    return_caliber: str = "raw",
 ) -> dict:
     """信息系数 IC：因子值与收益（通常为已对齐的前瞻收益）两列的相关系数，Pearson 或 Spearman。
 
@@ -302,8 +303,13 @@ def compute_information_coefficient(
       forward_returns (收益序列, 与 dates 等长, 小数口径; null/±inf 表缺失),
       as_of (ISO 日期, 必填; 晚于它的数据点一律拒绝并点名首个越界日期),
       method ("pearson" 默认 | "spearman", 大小写不敏感),
-      min_observations (最少可用配对数, 默认 5, 正整数; 不足则拒绝并点名该数)。
-    Returns: ic (相关系数, 无量纲, [-1, 1]) / method (生效口径, 小写回显) / n_observations
+      min_observations (最少可用配对数, 默认 5, 正整数; 不足则拒绝并点名该数),
+      return_caliber (第二列 `forward_returns` 的口径, `raw` 默认 | `excess`;
+        `raw` = 原始收益, `excess` = 相对基准的超额收益。**这是必填声明**——本工具算不出
+        口径, 只能由调用方交代；默认 `raw` 是为了不谎报成超额)。
+    Returns: ic (相关系数, 无量纲, [-1, 1]) / method (生效口径, 小写回显) /
+      return_caliber (回显第二列口径: raw | excess；**同一份产出内不得与另一口径的 IR 并排**
+      ——要么口径一致, 要么分组标注"不可直接比较") / n_observations
       (逐对删除后实际参与计算的配对数) / n_dropped (因任一侧缺失而剔除的配对数) /
       used_indices (参与计算的观测在输入中的索引, 与 ranked_* 同序) / params / warmup / evidence;
       method="spearman" 时另含 ranked_factor 与 ranked_returns (长度 = n_observations 的平均名次
@@ -315,6 +321,13 @@ def compute_information_coefficient(
     """
     a = check_as_of(as_of)
     m = _check_method(method)
+    caliber = str(return_caliber or "").strip().lower()
+    if caliber not in ("raw", "excess"):
+        raise ValueError(
+            f"return_caliber must be 'raw' or 'excess' (got {return_caliber!r}); "
+            "the tool cannot infer it — only the caller knows whether the second column "
+            "is raw or benchmark-excess return"
+        )
     mo = check_positive_window(min_observations, name="min_observations")
     f, r = _prep_pair(
         dates, factor, forward_returns, a,
@@ -333,13 +346,15 @@ def compute_information_coefficient(
     _require_spread(x, name="factor", n=usable)
     _require_spread(y, name="forward_returns", n=usable)
 
-    params = {"method": m, "min_observations": mo}
+    params = {"method": m, "min_observations": mo, "return_caliber": caliber}
     b = EvidenceBuilder("compute_information_coefficient", a)
     _emit_pair_counts(b, n, usable, dropped, params)
     b.add("method", m, unit=None, params=params)
+    b.add("return_caliber", caliber, unit=None, params=params)
 
     payload: dict[str, Any] = {
         "method": m,
+        "return_caliber": caliber,
         "n_observations": usable,
         "n_dropped": dropped,
         "used_indices": [int(i) for i in used],
@@ -488,7 +503,10 @@ def compute_factor_exposure(
     Input: dates (ISO 日期, 严格递增, 与两列等长), factor (因子值序列, 与 dates 等长; null/±inf 表缺失),
       returns (收益序列——被解释变量, 与 dates 等长, 小数口径; null/±inf 表缺失),
       as_of (ISO 日期, 必填; 晚于它的数据点一律拒绝并点名首个越界日期),
-      min_observations (最少可用配对数, 默认 5, 正整数; 不足则拒绝并点名该数)。
+      min_observations (最少可用配对数, 默认 5, 正整数; 不足则拒绝并点名该数),
+      return_caliber (第二列 `forward_returns` 的口径, `raw` 默认 | `excess`;
+        `raw` = 原始收益, `excess` = 相对基准的超额收益。**这是必填声明**——本工具算不出
+        口径, 只能由调用方交代；默认 `raw` 是为了不谎报成超额)。
     Returns: alpha (截距; 与 returns 同单位, 每期) / beta (因子暴露, 倍率, 无量纲) / t_alpha 与
       t_beta (H0: 系数 = 0 的 t 值, 自由度 n - 2; 残差标准差恰为 0 的完美拟合下标准误为 0,
       两值以 null 呈现并附 reason, 绝不返回 inf) / r_squared (决定系数, [0, 1]) / residual_stdev
