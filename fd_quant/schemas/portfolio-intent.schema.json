@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://finddatatech.cloud/schemas/portfolio-intent.schema.json",
+  "title": "PortfolioIntent",
+  "description": "评级到仓位的派生契约：把 N 条判定按显式规则确定性地压成一期目标权重，并把『这条权重从哪几条评级来、为什么排除其他』写成可解析的出处。规则只允许三种（等权 / conviction 加权 / 目标涨幅加权）——三者都不需要估计未来参数；任何需要估计预期收益或协方差的『最优权重』在没有样本外验证体系时就是样本内拟合，本契约不接受。本实例可无损导出为 TargetWeights，执行侧继续只认后者。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "as_of", "universe", "rules", "weights", "cash_floor", "derived_from", "producer"],
+  "properties": {
+    "schema_version": {
+      "description": "契约版本。仅支持 \"1\"。",
+      "const": "1"
+    },
+    "as_of": {
+      "description": "本期的决策日（ISO 日期）。as_of 晚于此日的评级不得进入本期权重。",
+      "type": "string",
+      "format": "date"
+    },
+    "universe": {
+      "description": "参与标的列表（weights 的键必须是其子集）。",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "rules": {
+      "description": "规则声明。kind 只允许三种；参数必须显式。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": ["equal_weight", "conviction_weighted", "target_upside_weighted"]
+        },
+        "cash_floor": {
+          "description": "现金下限，权重按 (1 - cash_floor) 分配。",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "conviction_floor": {
+          "description": "conviction 下限；低于此值的评级进 excluded 的 below_conviction_floor。",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "price_reference": {
+          "description": "目标涨幅的分母（现价），symbol → 正数。仅 target_upside_weighted 需要；任一所选标的缺此值即整条规则拒绝，不得退回等权。",
+          "type": "object",
+          "additionalProperties": {"type": "number", "exclusiveMinimum": 0}
+        },
+        "price_reference_as_of": {
+          "description": "参考价的口径日。与行情水位一起决定这份权重是否已经过时。",
+          "type": "string",
+          "format": "date"
+        }
+      }
+    },
+    "weights": {
+      "description": "symbol → 目标权重。不变式与 TargetWeights 相同：非负、键属于 universe、Σ ≤ 1、cash_floor + Σ ≤ 1（容差 1e-9）。拒绝而不归一化。",
+      "type": "object",
+      "additionalProperties": {"type": "number", "minimum": 0}
+    },
+    "cash_floor": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "derived_from": {
+      "description": "来源标识数组（Rating 的 id）。必填且非空：没有出处的权重无法被复核。",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "excluded": {
+      "description": "被排除项与原因。原因用固定枚举而不是自由文本，因为它要被跨期聚合；说明性文字放 rationale。计数守恒：入选 + 排除 = derived_from 的长度。",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "reason"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "reason": {
+            "enum": ["side_not_selected", "below_conviction_floor", "negative_upside", "outside_universe", "data_gap", "user_excluded"]
+          },
+          "symbol": {"type": "string"},
+          "detail": {"type": "string"}
+        }
+      }
+    },
+    "rebalance": {
+      "description": "调仓口径。null 表示单期。",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "every_n_bars": {"type": "integer", "minimum": 1}
+      }
+    },
+    "rationale": {
+      "description": "每期权重的可读依据。必须写明规则名与参数，并原话声明『conviction 是判定强度不是预期收益』（当规则用到 conviction 时）。",
+      "type": "string"
+    },
+    "evidence": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "producer": {
+      "type": "object"
+    }
+  }
+}

@@ -26,17 +26,25 @@ MANIFEST = REPO / "tool-surface.json"
 
 LEDGER = ledger_tools.TOOLS
 IDS = [s.name for s in LEDGER]
-ASSERTED_VERBS = {"record", "settle", "retrieve", "summarize"}
+# 动词白名单：账本工具的动词必须是这几类之一。"list" 于 add-investment-trading-fleet
+# 加入——待结算列举是一个独立的动作（"该结什么"），既不是 retrieve 的点内检索
+# （那个只看已结算），也不是 summarize 的聚合。
+ASSERTED_VERBS = {"record", "settle", "retrieve", "list", "summarize"}
 
 
 # ── 命名与注册 ──────────────────────────────────────────────────
 
 
-def test_ledger_group_registers_four_tools():
-    """四个动作各一个工具：落账 / 结算 / 检索 / 聚合。"""
+def test_ledger_group_registers_six_tools():
+    """六个动作各一个工具：落账 / 单票结算 / 组合结算 / 检索 / 待结算列举 / 聚合。
+
+    组合结算是独立工具而不是 settle_decision 的一个分支：两者的输入形状
+    （单序列 vs 多腿）与返回字段（成交价 vs 加权收益+现金）都不同，塞进一个
+    工具只会让签名变成"两种互斥用法的并集"。
+    """
     assert {s.name for s in LEDGER} == {
-        "record_decision", "settle_decision", "retrieve_decisions",
-        "summarize_pack_performance",
+        "record_decision", "settle_decision", "settle_portfolio", "retrieve_decisions",
+        "list_pending_decisions", "summarize_pack_performance",
     }
     assert all(s.group == "decision_ledger" for s in LEDGER)
 
@@ -47,7 +55,15 @@ def test_ledger_tools_appear_in_the_surface_registry():
     for spec in LEDGER:
         assert spec.name in surface
     assert SURFACE_GROUP_LEVELS["decision_ledger"] == "commercial"
-    assert EXTRA_GROUP_LEVELS == {"decision_ledger": "commercial"}
+    # 封闭集合断言：新增一个对外可见的族必须显式改这里（否则"某族悄悄
+    # 变成 commercial"不会有人发现）。portfolio_construction 于
+    # add-portfolio-intent-contract 加入——三件纯确定性、只读、幂等的工具。
+    assert EXTRA_GROUP_LEVELS == {
+        "decision_ledger": "commercial",
+        "portfolio_construction": "commercial",
+        # add-investment-trading-fleet：组合风控闸（纯函数、只读幂等）
+        "portfolio_risk": "commercial",
+    }
 
 
 def test_ledger_tool_names_use_the_extended_verb_whitelist():
@@ -347,6 +363,12 @@ def _kwargs_for(spec: ToolSpec, tmp_path: Path) -> dict:
             "symbol_dates": ld.dates(6), "symbol_prices": [100.0] * 5 + [110.0],
             "benchmark_dates": ld.dates(6), "benchmark_prices": [3000.0] * 6,
         },
+        "settle_portfolio": {
+            "decision_id": "pf-seed", "as_of": "2025-01-11", "benchmark_symbol": "000300.SS",
+            "legs": {"600519.SS": [ld.dates(6), [100.0] * 5 + [110.0]]},
+            "benchmark_dates": ld.dates(6), "benchmark_prices": [3000.0] * 6,
+        },
+        "list_pending_decisions": {"as_of": "2025-01-11"},
         "retrieve_decisions": {"symbol": "600519.SS", "as_of": "2025-01-11"},
         "summarize_pack_performance": {"as_of": "2025-01-11"},
     }[spec.name]
@@ -355,6 +377,20 @@ def _kwargs_for(spec: ToolSpec, tmp_path: Path) -> dict:
         rec = ledger_tools.record_decision(
             as_of="2025-01-06", symbol="600519.SS", pack=ld.PACK, skill=ld.SKILL,
             payload=ld.rating("2025-01-06", "600519.SS").to_dict(), db_path=db,
+        )
+        seed = {**seed, "decision_id": rec["result"]["decision_id"]}
+    if spec.name == "settle_portfolio":
+        # 组合同理：先落一条**组合**记录（单票记录会被 settle_portfolio 拒绝）
+        from fd_quant.portfolio import build_intent
+
+        intent = build_intent(
+            [{"as_of": "2025-01-06", "subject": "600519.SS", "side": "buy", "conviction": 0.8}],
+            {"kind": "equal_weight", "cash_floor": 0.2}, as_of="2025-01-06",
+            producer={"pack": ld.PACK, "skill": ld.SKILL},
+        )
+        rec = ledger_tools.record_decision(
+            as_of="2025-01-06", portfolio_key="2025-01-06-eq", pack=ld.PACK,
+            skill=ld.SKILL, payload=intent.to_dict(), record_kind="portfolio", db_path=db,
         )
         seed = {**seed, "decision_id": rec["result"]["decision_id"]}
     return {**seed, "db_path": db}

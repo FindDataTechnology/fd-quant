@@ -19,7 +19,7 @@ from typing import Any, Mapping, Optional, Sequence
 from ..caller import resolve_caller
 from ..compute import ToolSpec
 from .store import LedgerStore
-from .settlement import DEFAULT_HOLDING_DAYS
+from .settlement import DEFAULT_HOLDING_DAYS, check_iso_date
 
 GROUP = "decision_ledger"
 
@@ -53,10 +53,12 @@ def _envelope(tool: str, as_of: str, store: LedgerStore, result: dict) -> dict:
 
 def record_decision(
     as_of: str,
-    symbol: str,
     pack: str,
     skill: str,
     payload: Mapping[str, Any],
+    symbol: Optional[str] = None,
+    portfolio_key: Optional[str] = None,
+    record_kind: str = "single",
     db_path: Optional[str] = None,
     target_weights: Optional[Mapping[str, Any]] = None,
     evidence: Optional[Sequence[str]] = None,
@@ -80,7 +82,13 @@ def record_decision(
     发一条**新记录**（created=true、revises 指回、revision_seq 递增），被修订记录逐字不改；
     修订必须指向同键的当前 tip（链是线性的），内容与 tip 逐字相同则幂等返回 tip。
 
-    Input: as_of (ISO 日期, 必填; 也是幂等键的一部分), symbol (标的，如 600519.SS),
+    组合形态（add-portfolio-intent-contract）：`record_kind="portfolio"` + `portfolio_key`
+    （该期组合的稳定键），此时**不传 symbol**、payload 是 `PortfolioIntent`；单票仍传
+    symbol + Rating。主体字段与种类必须一致（同时给或同时缺都被拒绝）。幂等键因此是
+    (caller, record_kind, as_of, subject_key, pack, skill)，subject_key 单体取 symbol、
+    组合取 portfolio_key——同一 as_of 下两者互不覆盖。
+
+    Input: as_of (ISO 日期, 必填; 也是幂等键的一部分), symbol (标的，如 600519.SS；组合记录不传),
       pack / skill (产出方标识，必须与 payload.producer 一致), payload (Rating 契约对象, 必填),
       db_path (可选；缺省取环境变量 FD_QUANT_LEDGER_DB，再缺省为工作目录 fd_quant_ledger.db),
       target_weights (可选 TargetWeights 契约对象，随判定一起存), evidence (可选引用 id 数组；
@@ -96,8 +104,8 @@ def record_decision(
     store = _store(db_path)
     result = store.record(
         caller=resolve_caller(), as_of=as_of, symbol=symbol, pack=pack, skill=skill,
-        payload=payload, target_weights=target_weights, evidence=evidence, revises=revises,
-        now=now,
+        payload=payload, record_kind=record_kind, portfolio_key=portfolio_key,
+        target_weights=target_weights, evidence=evidence, revises=revises, now=now,
     )
     return _envelope("record_decision", as_of, store, result)
 
@@ -164,6 +172,64 @@ def settle_decision(
     return _envelope("settle_decision", as_of, store, result)
 
 
+def settle_portfolio(
+    decision_id: str,
+    legs: Mapping[str, Sequence[Any]],
+    benchmark_dates: Sequence[str],
+    benchmark_prices: Sequence[Optional[float]],
+    benchmark_symbol: str,
+    as_of: str,
+    db_path: Optional[str] = None,
+    reflection: Optional[str] = None,
+    holding_days: Optional[int] = None,
+    now: Optional[str] = None,
+) -> dict:
+    """到期结算一条**组合**记录：算加权收益、现金部分与相对基准 alpha，并落库（幂等）。
+
+    与 `settle_decision` 的三处不同，都是组合语义要求的：
+
+    1. **整期多腿**：`legs` 是 `{symbol: [日期序列, 价格序列]}` 映射，必须覆盖该期
+       `PortfolioIntent.weights` 的全部标的——少一条腿即拒绝（不把缺输入读成"没持仓"），
+       多一条腿同样拒绝（没有权重的腿不该出现在结算里）。
+    2. **日期轴 = 全部标的日期 ∩ 基准日期**。各腿各用各的轴算出来的是几段不同持有期收益
+       的加权和，那不是"一个组合在某一期的收益"。
+    3. **现金单独报**：`cash_weight = 1 − Σ权重`，收益记零，**不摊进标的收益**。
+
+    **权重不另传**：取自记录的 payload（`PortfolioIntent.weights`）。允许另传就会有两个
+    权重来源，而两份迟早不一致，"这笔单依据哪份权重"也就没有唯一答案。
+
+    整期原子：任一腿不覆盖持有期 → 整次拒绝并报缺口交易日数，不落任何行、状态保持
+    pending。幂等：已结算再结算返回既有结果（created=false）。
+
+    Input: decision_id (必填，组合记录的 id), legs (必填，`{symbol: [dates, prices]}`),
+      benchmark_dates / benchmark_prices (基准序列), benchmark_symbol (必填：组合没有单一
+      标的可做后缀映射), as_of (ISO 日期), db_path (可选；缺省取环境变量
+      FD_QUANT_LEDGER_DB，再缺省为工作目录 fd_quant_ledger.db), reflection (可选，只在首次可写),
+      holding_days (可选正整数，默认 5 个交易日), now (可选，仅测试用)。
+    Returns: tool / as_of / db_path / result（created、reason、decision_id、settlement 含
+      raw_return (= Σ 权重 × 各腿收益，小数)、invested_weight、cash_weight、cash_return
+      (恒 0)、benchmark_symbol / benchmark_return、alpha (= raw_return − benchmark_return)、
+      holding_days、leg_returns (逐腿收益)、reflection、reflection_ignored、counts）。
+      假设：账本不取数——任何价格 / 基准序列都由调用方传入；权重取自记录 payload，
+      不另传（另传就有两个权重来源）；持有期按交易日计，交易日历由传入序列的日期集合
+      隐式给出（账本不内置日历）。
+    """
+    store = _store(db_path)
+    parsed: dict[str, tuple[Sequence[Any], Sequence[Any]]] = {}
+    for sym, pair in dict(legs).items():
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise LedgerError(
+                f"legs[{sym!r}] must be [dates, prices] (got {type(pair).__name__})"
+            )
+        parsed[str(sym)] = (pair[0], pair[1])
+    result = store.settle_portfolio(
+        decision_id=decision_id, legs=parsed, benchmark_dates=benchmark_dates,
+        benchmark_prices=benchmark_prices, as_of=as_of, benchmark_symbol=benchmark_symbol,
+        reflection=reflection, holding_days=holding_days, now=now,
+    )
+    return _envelope("settle_portfolio", as_of, store, result)
+
+
 def retrieve_decisions(
     symbol: str,
     as_of: str,
@@ -197,6 +263,49 @@ def retrieve_decisions(
     result = store.retrieve(caller=resolve_caller(), symbol=symbol, as_of=as_of, n_same=n_same,
                             m_cross=m_cross, pack=pack)
     return _envelope("retrieve_decisions", as_of, store, result)
+
+
+def list_pending_decisions(
+    as_of: str,
+    pack: Optional[str] = None,
+    record_kind: Optional[str] = None,
+    as_of_from: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    holding_days: Optional[int] = None,
+    db_path: Optional[str] = None,
+) -> dict:
+    """列出**待结算**记录（分页 + 总数），供定时复盘逐条结算。
+
+    为什么需要它：`retrieve_decisions` 只回已结算且结算日 ≤ as_of 的记录（点内纪律），
+    看不到待结算清单。此前做到期复盘只能靠"落账时自己记住 decision_id"——对定时任务
+    等于没有。本工具补上这条唯一的"该结什么"入口。
+
+    **未到期的记录照样在清单里**，带 `due_estimate` 与 `matured=false`。隐去它们会让
+    "没东西要结"与"有 N 条还没到期"变成同一个输出，而两者的处置完全不同。
+
+    到期日 `due_estimate` 是**自然日粗估**（as_of + holding_days 天）：精确交易日以结算时
+    传入序列的日期集合为准，账本不内置日历。
+
+    Input: as_of (ISO 日期，必填：本次复盘的参考日，用于判断哪些已到期),
+      pack / record_kind (可选过滤；record_kind 取 single | portfolio),
+      as_of_from (可选：只要 as_of ≥ 该日的记录), limit / offset (分页，默认 100 / 0),
+      holding_days (可选正整数，默认取本库配置的持有期),
+      db_path (可选；缺省取环境变量 FD_QUANT_LEDGER_DB，再缺省为工作目录 fd_quant_ledger.db)。
+    Returns: tool / as_of / db_path / caller / filters / pagination（limit、offset、
+      total、returned）/ holding_days / today / items（每条含 decision_id、as_of、subject、
+      record_kind、pack、skill、status、payload、due_estimate、holding_days、matured、
+      missing_trading_days_estimate、counts）。仅在调用者自身范围内生效。
+      假设：账本不取数——任何价格 / 基准序列都由调用方传入；持有期按交易日计，交易日历由传入序列的日期集合隐式给出（账本不内置日历）。
+    """
+    store = _store(db_path)
+    a = check_iso_date(as_of, name="as_of")
+    result = store.list_pending(
+        caller=resolve_caller(), pack=pack, record_kind=record_kind,
+        as_of_from=as_of_from, limit=limit, offset=offset,
+        holding_days=holding_days, today=a,
+    )
+    return _envelope("list_pending_decisions", a, store, result)
 
 
 def summarize_pack_performance(
@@ -263,7 +372,10 @@ _LEDGER_READ = {
 TOOLS: list[ToolSpec] = [
     ToolSpec("record_decision", GROUP, record_decision, tool_annotations=_LEDGER_WRITE),
     ToolSpec("settle_decision", GROUP, settle_decision, tool_annotations=_LEDGER_WRITE),
+    ToolSpec("settle_portfolio", GROUP, settle_portfolio, tool_annotations=_LEDGER_WRITE),
     ToolSpec("retrieve_decisions", GROUP, retrieve_decisions, tool_annotations=_LEDGER_READ),
+    ToolSpec("list_pending_decisions", GROUP, list_pending_decisions,
+             tool_annotations=_LEDGER_READ),
     ToolSpec("summarize_pack_performance", GROUP, summarize_pack_performance,
              tool_annotations=_LEDGER_READ),
 ]

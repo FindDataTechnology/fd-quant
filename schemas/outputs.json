@@ -9,6 +9,196 @@
     "evidence"
   ],
   "tools": {
+    "build_portfolio_intent": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "counts": {
+          "type": "object"
+        },
+        "intent": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "$id": "https://finddatatech.cloud/schemas/portfolio-intent.schema.json",
+          "title": "PortfolioIntent",
+          "description": "评级到仓位的派生契约：把 N 条判定按显式规则确定性地压成一期目标权重，并把『这条权重从哪几条评级来、为什么排除其他』写成可解析的出处。规则只允许三种（等权 / conviction 加权 / 目标涨幅加权）——三者都不需要估计未来参数；任何需要估计预期收益或协方差的『最优权重』在没有样本外验证体系时就是样本内拟合，本契约不接受。本实例可无损导出为 TargetWeights，执行侧继续只认后者。",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "as_of",
+            "universe",
+            "rules",
+            "weights",
+            "cash_floor",
+            "derived_from",
+            "producer"
+          ],
+          "properties": {
+            "schema_version": {
+              "description": "契约版本。仅支持 \"1\"。",
+              "const": "1"
+            },
+            "as_of": {
+              "description": "本期的决策日（ISO 日期）。as_of 晚于此日的评级不得进入本期权重。",
+              "type": "string",
+              "format": "date"
+            },
+            "universe": {
+              "description": "参与标的列表（weights 的键必须是其子集）。",
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "rules": {
+              "description": "规则声明。kind 只允许三种；参数必须显式。",
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "equal_weight",
+                    "conviction_weighted",
+                    "target_upside_weighted"
+                  ]
+                },
+                "cash_floor": {
+                  "description": "现金下限，权重按 (1 - cash_floor) 分配。",
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "conviction_floor": {
+                  "description": "conviction 下限；低于此值的评级进 excluded 的 below_conviction_floor。",
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "price_reference": {
+                  "description": "目标涨幅的分母（现价），symbol → 正数。仅 target_upside_weighted 需要；任一所选标的缺此值即整条规则拒绝，不得退回等权。",
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                },
+                "price_reference_as_of": {
+                  "description": "参考价的口径日。与行情水位一起决定这份权重是否已经过时。",
+                  "type": "string",
+                  "format": "date"
+                }
+              }
+            },
+            "weights": {
+              "description": "symbol → 目标权重。不变式与 TargetWeights 相同：非负、键属于 universe、Σ ≤ 1、cash_floor + Σ ≤ 1（容差 1e-9）。拒绝而不归一化。",
+              "type": "object",
+              "additionalProperties": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "cash_floor": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "derived_from": {
+              "description": "来源标识数组（Rating 的 id）。必填且非空：没有出处的权重无法被复核。",
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "excluded": {
+              "description": "被排除项与原因。原因用固定枚举而不是自由文本，因为它要被跨期聚合；说明性文字放 rationale。计数守恒：入选 + 排除 = derived_from 的长度。",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "reason"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "reason": {
+                    "enum": [
+                      "side_not_selected",
+                      "below_conviction_floor",
+                      "negative_upside",
+                      "outside_universe",
+                      "data_gap",
+                      "user_excluded"
+                    ]
+                  },
+                  "symbol": {
+                    "type": "string"
+                  },
+                  "detail": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "rebalance": {
+              "description": "调仓口径。null 表示单期。",
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "every_n_bars": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "rationale": {
+              "description": "每期权重的可读依据。必须写明规则名与参数，并原话声明『conviction 是判定强度不是预期收益』（当规则用到 conviction 时）。",
+              "type": "string"
+            },
+            "evidence": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "producer": {
+              "type": "object"
+            }
+          }
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "as_of",
+        "counts",
+        "intent",
+        "rationale",
+        "tool"
+      ],
+      "additionalProperties": false
+    },
     "build_valuation_synthesis": {
       "type": "object",
       "properties": {
@@ -201,6 +391,56 @@
         "surplus",
         "usable_observations",
         "warmup"
+      ],
+      "additionalProperties": false
+    },
+    "check_preconditions_monitorable": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "counts": {
+          "type": "object"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "null"
+        },
+        "input_length": {
+          "type": "null"
+        },
+        "input_start": {
+          "type": "null"
+        },
+        "monitorable": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "unmonitorable": {
+          "type": "array"
+        }
+      },
+      "required": [
+        "as_of",
+        "complete",
+        "counts",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_start",
+        "monitorable",
+        "unmonitorable"
       ],
       "additionalProperties": false
     },
@@ -1570,6 +1810,75 @@
       ],
       "additionalProperties": false
     },
+    "detect_conflicts": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "counts": {
+          "type": "object"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "input_end": {
+          "type": "null"
+        },
+        "input_length": {
+          "type": "null"
+        },
+        "input_range": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "input_start": {
+          "type": "null"
+        },
+        "records_excluded": {
+          "type": "integer"
+        },
+        "records_judged": {
+          "type": "integer"
+        },
+        "temporal_evolution": {
+          "type": "array"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "unresolvable": {
+          "type": "array"
+        }
+      },
+      "required": [
+        "as_of",
+        "conflicts",
+        "counts",
+        "evidence",
+        "input_end",
+        "input_length",
+        "input_range",
+        "input_start",
+        "records_excluded",
+        "records_judged",
+        "temporal_evolution",
+        "truncated",
+        "unresolvable"
+      ],
+      "additionalProperties": false
+    },
     "detect_red_flags": {
       "type": "object",
       "properties": {
@@ -2072,6 +2381,64 @@
       ],
       "additionalProperties": false
     },
+    "evaluate_portfolio_gate": {
+      "type": "object",
+      "properties": {
+        "breached": {
+          "type": "boolean"
+        },
+        "inputs": {
+          "type": "object"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "status": {
+          "type": "string"
+        },
+        "undetermined": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "required": [
+        "breached",
+        "inputs",
+        "items",
+        "status",
+        "undetermined"
+      ],
+      "additionalProperties": false
+    },
+    "list_pending_decisions": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "db_path": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "as_of",
+        "db_path",
+        "result",
+        "tool"
+      ],
+      "additionalProperties": false
+    },
     "rank_factor_scores": {
       "type": "object",
       "properties": {
@@ -2277,6 +2644,12 @@
                   "payload": {
                     "$ref": "https://finddatatech.cloud/schemas/rating.schema.json"
                   },
+                  "portfolio_key": {
+                    "type": "null"
+                  },
+                  "record_kind": {
+                    "type": "string"
+                  },
                   "revises": {
                     "type": "null"
                   },
@@ -2290,6 +2663,9 @@
                     "type": "string"
                   },
                   "status": {
+                    "type": "string"
+                  },
+                  "subject": {
                     "type": "string"
                   },
                   "symbol": {
@@ -2313,11 +2689,14 @@
                   "evidence",
                   "pack",
                   "payload",
+                  "portfolio_key",
+                  "record_kind",
                   "revises",
                   "revision_seq",
                   "settlement",
                   "skill",
                   "status",
+                  "subject",
                   "symbol",
                   "target_weights"
                 ],
@@ -2353,6 +2732,30 @@
       "additionalProperties": false
     },
     "settle_decision": {
+      "type": "object",
+      "properties": {
+        "as_of": {
+          "type": "string"
+        },
+        "db_path": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "as_of",
+        "db_path",
+        "result",
+        "tool"
+      ],
+      "additionalProperties": false
+    },
+    "settle_portfolio": {
       "type": "object",
       "properties": {
         "as_of": {
@@ -3377,6 +3780,180 @@
       ],
       "additionalProperties": false
     },
+    "to_target_weights": {
+      "type": "object",
+      "properties": {
+        "target_weights": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "$id": "https://finddatatech.cloud/schemas/target-weights.schema.json",
+          "title": "TargetWeights",
+          "description": "目标权重契约：策略对一组标的目标仓位的表达。回测与纸面实盘消费同一输出（权重向量契约）。校验拒绝而不自动归一化——违规输入由生产者修正，不在契约边界被静默缩放。",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "as_of",
+            "universe",
+            "weights",
+            "cash_floor",
+            "constraints",
+            "evidence",
+            "producer"
+          ],
+          "properties": {
+            "schema_version": {
+              "description": "契约版本。仅支持 \"1\"。",
+              "const": "1"
+            },
+            "as_of": {
+              "description": "权重对应的决策日（ISO 日期）。此后的数据不得进入本次权重。",
+              "type": "string",
+              "format": "date"
+            },
+            "universe": {
+              "description": "参与标的列表（weights 的键必须是其子集）。",
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "weights": {
+              "description": "标的到权重的映射。不变式：非负；键属于 universe；Σ ≤ 1（容差 1e-9）；cash_floor + Σ ≤ 1（同容差）。前两条与键归属由本 schema 强制；求和类不变式（Σ ≤ 1、cash_floor + Σ ≤ 1）需要跨字段算术，JSON Schema 无法表达，由契约层的 Python 校验强制（tests/test_contract_parity.py 的算术类断言钉住两侧分工）。",
+              "type": "object",
+              "additionalProperties": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "cash_floor": {
+              "description": "目标最低现金比例（风险资产之外）。注意这里记录的是目标值，与 Σweights 相加不得超 1。",
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "constraints": {
+              "description": "约束声明（至少可表达单票上限与板块上限），供回测与风控消费。",
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "max_weight_per_symbol": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "max_weight_per_sector": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            },
+            "evidence": {
+              "description": "证据数组（形状与 Rating 的 evidence 一致）。",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/evidence"
+              }
+            },
+            "producer": {
+              "$ref": "#/$defs/producer"
+            }
+          },
+          "$defs": {
+            "evidence": {
+              "description": "单条证据：值、单位、期别与来源四要素 + 稳定句柄与人类标签。",
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "evidence_id",
+                "label",
+                "value",
+                "unit",
+                "as_of",
+                "source"
+              ],
+              "properties": {
+                "evidence_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "value": {
+                  "type": [
+                    "number",
+                    "string",
+                    "null"
+                  ]
+                },
+                "unit": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "as_of": {
+                  "type": "string",
+                  "format": "date"
+                },
+                "source": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "producer": {
+              "description": "产出方：pack 与 skill 决定归因，run_id 可选。",
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "pack",
+                "skill"
+              ],
+              "properties": {
+                "pack": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "skill": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "run_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "tool": {
+          "type": "string"
+        },
+        "valid": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "target_weights",
+        "tool",
+        "valid"
+      ],
+      "additionalProperties": false
+    },
     "validate_no_lookahead": {
       "type": "object",
       "properties": {
@@ -3493,6 +4070,26 @@
         "values_provided",
         "warmup",
         "window_invariant"
+      ],
+      "additionalProperties": false
+    },
+    "validate_portfolio_intent": {
+      "type": "object",
+      "properties": {
+        "errors": {
+          "type": "array"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "valid": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "errors",
+        "tool",
+        "valid"
       ],
       "additionalProperties": false
     }

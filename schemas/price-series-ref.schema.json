@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://finddatatech.cloud/schemas/price-series-ref.schema.json",
+  "title": "PriceSeriesRef",
+  "description": "价格序列的出处引用：说明这一串价格来自哪个源、是什么复权口径、覆盖到哪一天、以及一个随输入变化的指纹。研究取价、交易行情、结算取价三路都必须返回它，并互相断言一致；不一致即拒绝出数。as_of_max 必填——没有水位的引用无法回答『这批价格到哪天为止』，而那正是陈旧度判定的唯一依据。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_id", "symbol", "adjustment", "as_of_max", "fingerprint"],
+  "properties": {
+    "schema_version": {
+      "description": "契约版本。仅支持 \"1\"。",
+      "const": "1"
+    },
+    "source_id": {
+      "description": "注册表中的源标识（不是库内 source_used 的字面量，二者可能是 <id>@<anchor> 与基名的关系）。",
+      "type": "string",
+      "minLength": 1
+    },
+    "symbol": {
+      "description": "标的标识。指数与个股同码时按实体类型区分，本字段只承载已解析后的标的。",
+      "type": "string",
+      "minLength": 1
+    },
+    "adjustment": {
+      "description": "复权口径。not_applicable 供指数使用；必须是显式取值，不得留空——空值与『不适用』是两件事。",
+      "enum": ["qfq", "hfq", "none", "not_applicable"]
+    },
+    "adjustment_anchor": {
+      "description": "复权锚点。adjustment 为 qfq/hfq 时必填：没有锚点就无法判断两批数据可比不可比。per_fetch 表示每批抓取各自锚定（已知有害口径）。",
+      "type": "string",
+      "minLength": 1
+    },
+    "as_of_max": {
+      "description": "该序列已证可用的最新日期（水位）。必填且为日期。",
+      "type": "string",
+      "format": "date"
+    },
+    "db_source": {
+      "description": "库内 source_used 的实际取值。口径变体（<id>@<anchor>）在此指回基名。",
+      "type": "string",
+      "minLength": 1
+    },
+    "window_start": {
+      "description": "本次请求窗口的起始日（含）。",
+      "type": "string",
+      "format": "date"
+    },
+    "window_end": {
+      "description": "本次请求窗口的结束日（含）。",
+      "type": "string",
+      "format": "date"
+    },
+    "row_count": {
+      "description": "本次序列的观测点数。与窗口一起使『同一引用』可被复现。",
+      "type": "integer",
+      "minimum": 0
+    },
+    "fingerprint": {
+      "description": "sha256 十六进制摘要，由 (源, 库源, 标的, 口径, 锚点, 窗口, 水位, 点数) 的规范 JSON 算出。水位前移即换指纹。",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "producer": {
+      "description": "引用是谁产出的（可选）。与 Rating/TargetWeights 的 producer 同形。",
+      "type": "object"
+    }
+  }
+}

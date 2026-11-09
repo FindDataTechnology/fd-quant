@@ -391,12 +391,19 @@ def test_the_only_reflection_output_path_is_retrieval(store):
         if not name.startswith("_")
     }
     assert query_methods == {
-        "record",          # 写入（返回的是新记录，不含历史反思）
-        "settle",          # 写入（返回本次/既有结算，含反思——单条，不构成流）
-        "get",             # 读：按 id 单查
-        "retrieve",        # 读：点内检索
-        "stats_by_pack",   # 读：聚合数字（**不含**反思文本）
-        "row_counts",      # 读：行数
+        "record",              # 写入（返回的是新记录，不含历史反思）
+        "settle",              # 写入（返回本次/既有结算，含反思——单条，不构成流）
+        "settle_portfolio",    # 写入（组合结算；含反思，同样单条、不构成流）
+        "settle_metric_threshold",  # 写入（阈值口径结算；返回单条，含反思但不构成流）
+        "get",                 # 读：按 id 单查
+        "retrieve",            # 读：点内检索
+        "list_pending",        # 读：待结算清单（只回 pending，不含反思文本）
+        "stats_by_pack",       # 读：聚合数字（**不含**反思文本）
+        "row_counts",          # 读：行数
+        # 风控阈值留痕（add-investment-trading-fleet 3.5）：阈值变更历史。
+        # 不含反思文本——它是另一条审计线，不与决策反思混在一起。
+        "record_risk_thresholds",
+        "latest_risk_thresholds",
     }, f"ledger gained a public method without a push/reflection-output review: {query_methods}"
 
     # 聚合视图不含反思文本（数字视图与文本视图分离：绩效数字可公开，反思只随点内检索）
@@ -490,7 +497,7 @@ def test_stats_group_by_skill(store):
         _settle(store, r["decision_id"], start="2025-01-06", sym_p1=p1,
                 bench_p0=1000.0, bench_p1=1000.0)
     out = store.stats_by_pack(caller=CALLER, as_of="2025-12-31", group_by_skill=True)
-    assert out["group_by"] == ["pack", "skill"]
+    assert out["group_by"] == ["pack", "skill", "record_kind"]
     rows = {g["skill"]: g for g in out["rows"] if g["pack"] == ld.PACK}
     assert rows["equity-research-thesis"]["samples"] == 1
     assert rows["equity-research-thesis"]["mean_alpha"] == pytest.approx(0.11)
@@ -510,7 +517,7 @@ def test_stats_group_by_holding_period(store):
                      as_of=sym[-1], holding_days=hd)
     out = store.stats_by_pack(caller=CALLER, as_of="2025-12-31", group_by_holding=True,
                               holding_days=[3, 5, 10])
-    assert out["group_by"] == ["pack", "holding_days"]
+    assert out["group_by"] == ["pack", "record_kind", "holding_days"]
     rows = {g["holding_days"]: g for g in out["rows"] if g["pack"] == ld.PACK}
     assert set(rows) == {3, 5, 10}
     assert all(rows[h]["samples"] == 1 for h in rows)
@@ -524,7 +531,7 @@ def test_stats_by_skill_and_holding_together(store):
     _settle(store, r["decision_id"], start="2025-01-06")
     out = store.stats_by_pack(caller=CALLER, as_of="2025-12-31", group_by_skill=True, group_by_holding=True,
                               holding_days=[5, 10])
-    assert out["group_by"] == ["pack", "skill", "holding_days"]
+    assert out["group_by"] == ["pack", "skill", "record_kind", "holding_days"]
     rows = {g["holding_days"]: g for g in out["rows"] if g["pack"] == ld.PACK}
     assert rows[5]["skill"] == ld.SKILL and rows[5]["samples"] == 1
     assert rows[10]["skill"] == ld.SKILL and rows[10]["samples"] == 0

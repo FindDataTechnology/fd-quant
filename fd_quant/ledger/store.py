@@ -62,7 +62,8 @@ import os
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date as _date
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
@@ -72,8 +73,10 @@ from .errors import LedgerError, RevisionConflict, UnknownDecision
 from .settlement import (
     DEFAULT_BENCHMARK_MAP,
     DEFAULT_HOLDING_DAYS,
+    build_series,
     check_holding_days,
     check_iso_date,
+    portfolio_settlement_window,
     resolve_benchmark,
     settlement_window,
 )
@@ -91,8 +94,15 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         decision_id     TEXT PRIMARY KEY,
         -- caller：调用者标识（账本按此隔离）。由调用上下文解析，不接受入参声明。
         caller          TEXT NOT NULL DEFAULT 'anonymous',
+        -- record_kind：单体判定 or 组合一期（add-portfolio-intent-contract）。
+        -- 两类记录共存于一张表，但主体字段互斥，且聚合时不得混算。
+        record_kind     TEXT NOT NULL DEFAULT 'single'
+                        CHECK (record_kind IN ('single', 'portfolio')),
         as_of           TEXT NOT NULL,
-        symbol          TEXT NOT NULL,
+        -- 单体记录的标；组合记录为 NULL（主体改由 portfolio_key 承担）。
+        symbol          TEXT,
+        -- 组合记录的稳定键；单体记录为 NULL。
+        portfolio_key   TEXT,
         pack            TEXT NOT NULL,
         skill           TEXT NOT NULL,
         payload         TEXT NOT NULL,
@@ -102,44 +112,127 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         revises         TEXT REFERENCES decisions(decision_id),
         revision_seq    INTEGER NOT NULL CHECK (revision_seq >= 0),
         created_at      TEXT NOT NULL,
+        -- v2 决策（generalize-decision-contract）：NULL 表示 v1 记录（Rating/TargetWeights）。
+        -- 刻意不加 NOT NULL：v1 记录没有主体种类与动作，portfolio 记录也没有单一主体；
+        -- 强行回填会把一个错误的语义固化进历史数据。
+        subject_kind    TEXT,
+        subject_key     TEXT,
+        action          TEXT,
+        preconditions   TEXT,   -- JSON array
+        settlement_spec TEXT,   -- JSON object
         CHECK (
             (revises IS NULL AND revision_seq = 0)
             OR (revises IS NOT NULL AND revision_seq > 0)
         ),
-        CHECK (revises IS NULL OR revises <> decision_id)
+        CHECK (revises IS NULL OR revises <> decision_id),
+        -- 主体字段与记录种类必须一致：同时给出或同时缺失都是错误，不是"取其一"。
+        CHECK (
+            (record_kind = 'single' AND symbol IS NOT NULL AND portfolio_key IS NULL)
+            OR
+            (record_kind = 'portfolio' AND portfolio_key IS NOT NULL AND symbol IS NULL)
+        ),
+        -- v2 记录必须给齐 subject_kind；v1 记录三列全空。不许"半套"。
+        CHECK (
+            (subject_kind IS NULL AND subject_key IS NULL AND action IS NULL)
+            OR (subject_kind IS NOT NULL AND subject_key IS NOT NULL AND action IS NOT NULL)
+        )
     )
     """,
-    # 初始记录：幂等键全表唯一（重复提交的最终屏障）
+    # 初始记录：幂等键全表唯一（重复提交的最终屏障）。
+    # subject_key 由 COALESCE(symbol, portfolio_key) 表达——不为它另立一列，
+    # 因为那是把同一个事实写两遍，而两份迟早分叉。
     """
     CREATE UNIQUE INDEX IF NOT EXISTS ux_decisions_initial
-        ON decisions (caller, as_of, symbol, pack, skill) WHERE revises IS NULL
+        ON decisions (caller, record_kind, as_of, COALESCE(symbol, portfolio_key), pack, skill)
+        WHERE revises IS NULL
     """,
     # 修订：同键按递增序号唯一，线性链不可能出现兄弟分叉
     """
     CREATE UNIQUE INDEX IF NOT EXISTS ux_decisions_revision
-        ON decisions (caller, as_of, symbol, pack, skill, revision_seq) WHERE revises IS NOT NULL
+        ON decisions (caller, record_kind, as_of, COALESCE(symbol, portfolio_key), pack, skill,
+                      revision_seq)
+        WHERE revises IS NOT NULL
     """,
     "CREATE INDEX IF NOT EXISTS ix_decisions_symbol_as_of ON decisions (caller, symbol, as_of)",
     "CREATE INDEX IF NOT EXISTS ix_decisions_pack_skill ON decisions (caller, pack, skill)",
+    "CREATE INDEX IF NOT EXISTS ix_decisions_kind ON decisions (caller, record_kind, as_of)",
     """
     CREATE TABLE IF NOT EXISTS settlements (
         decision_id           TEXT PRIMARY KEY REFERENCES decisions(decision_id),
         settled_at            TEXT NOT NULL,
         settlement_date       TEXT NOT NULL,
-        entry_price           REAL NOT NULL,
-        exit_price            REAL NOT NULL,
-        raw_return            REAL NOT NULL,
-        benchmark_symbol      TEXT NOT NULL,
-        benchmark_mapping     TEXT NOT NULL,
-        benchmark_entry_price REAL NOT NULL,
-        benchmark_exit_price  REAL NOT NULL,
-        benchmark_return      REAL NOT NULL,
-        alpha                 REAL NOT NULL,
-        holding_days          INTEGER NOT NULL,
-        reflection            TEXT
+        -- rule_id / verdict（generalize-decision-contract）：一个口径位 + 一个三态结论。
+        -- 历史行按 rule_id='alpha_vs_benchmark' 回填，verdict 由 alpha>0 推导——那次推导是
+        -- **新增判断**，不是"恢复原值"；迁移与复盘输出都必须注明这一点。
+        rule_id               TEXT NOT NULL DEFAULT 'alpha_vs_benchmark'
+                              CHECK (rule_id IN ('alpha_vs_benchmark', 'metric_threshold')),
+        verdict               TEXT NOT NULL DEFAULT 'miss'
+                              CHECK (verdict IN ('hit', 'miss', 'insufficient_data')),
+        -- 价格口径（rule_id='alpha_vs_benchmark' 时非空）
+        entry_price           REAL,
+        exit_price            REAL,
+        raw_return            REAL,
+        benchmark_symbol      TEXT,
+        benchmark_mapping     TEXT,
+        benchmark_entry_price REAL,
+        benchmark_exit_price  REAL,
+        benchmark_return      REAL,
+        alpha                 REAL,
+        holding_days          INTEGER,
+        -- 阈值口径（rule_id='metric_threshold' 时非空）
+        metric_ref            TEXT,
+        observed_value        REAL,
+        comparator            TEXT,
+        threshold             REAL,
+        series_fingerprint    TEXT,
+        reflection            TEXT,
+        -- 两种口径各自要求的字段必须齐；不许"都没有"。
+        CHECK (
+            (rule_id = 'alpha_vs_benchmark' AND alpha IS NOT NULL AND benchmark_symbol IS NOT NULL)
+            OR
+            (rule_id = 'metric_threshold' AND metric_ref IS NOT NULL AND verdict IS NOT NULL)
+        )
     )
     """,
     "CREATE INDEX IF NOT EXISTS ix_settlements_date ON settlements (settlement_date)",
+    # 组合结算是**另一张表**：单票结算的 entry/exit 是"两笔成交价"，组合的是
+    # "加权收益 + 现金部分"，硬塞进同一张表会让两类语义共用一个形状。
+    # 分开也顺带把"不得以单票结果拼装组合收益"变成结构事实——没有那样的拼装路径。
+    """
+    CREATE TABLE IF NOT EXISTS portfolio_settlements (
+        decision_id       TEXT PRIMARY KEY REFERENCES decisions(decision_id),
+        settled_at        TEXT NOT NULL,
+        settlement_date   TEXT NOT NULL,
+        raw_return        REAL NOT NULL,
+        invested_weight   REAL NOT NULL,
+        cash_weight       REAL NOT NULL,
+        cash_return       REAL NOT NULL,
+        benchmark_symbol  TEXT NOT NULL,
+        benchmark_mapping TEXT NOT NULL,
+        benchmark_return  REAL NOT NULL,
+        alpha             REAL NOT NULL,
+        holding_days      INTEGER NOT NULL,
+        legs              TEXT NOT NULL,
+        reflection        TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_portfolio_settlements_date"
+    " ON portfolio_settlements (settlement_date)",
+    # 风控阈值变更留痕（change3 task 3.5）：**追加式**，最新一行即当前生效值。
+    # 为什么不就地改写：改了阈值就改了策略，而"当时用的是哪套阈值"必须能查回来——
+    # 否则历史轮次的产出会看起来像用新阈值跑出来的。
+    """
+    CREATE TABLE IF NOT EXISTS risk_thresholds (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        caller       TEXT NOT NULL,
+        scope        TEXT NOT NULL DEFAULT 'default',
+        thresholds   TEXT NOT NULL,
+        reason       TEXT NOT NULL,
+        recorded_at  TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_risk_thresholds_latest"
+    " ON risk_thresholds (caller, scope, id)",
 )
 
 
@@ -167,6 +260,16 @@ def _clean_float(value: Any, *, name: str) -> float:
     if not math.isfinite(f):
         raise LedgerError(f"{name} in the ledger is not finite ({value!r}); refusing to return it")
     return f
+
+
+def _clean_float_or_none(value: Any, *, name: str):
+    """结算读数：阈值口径下价格类列**本来就空**，空是合法值而非脏数据。
+
+    与 `_clean_float` 的分工：那个表达"这一列必须有限，否则说明库被写坏了"；
+    这个表达"这一列可能为空（另一种口径不用它），有值时仍必须是有限数"。
+    不把两者合并——合并会让真正的脏数据被静默当成"空"。
+    """
+    return None if value is None else _clean_float(value, name=name)
 
 
 def _mean(values: Sequence[float]) -> float:
@@ -208,11 +311,45 @@ class _Merged:
 
 def _merge_settlement(decision_row: Any, settlement_row: Any) -> _Merged:
     merged = {k: decision_row[k] for k in decision_row.keys()}
-    for key in ("settled_at", "settlement_date", "entry_price", "exit_price", "raw_return",
-                "benchmark_symbol", "benchmark_mapping", "benchmark_return", "alpha",
-                "holding_days", "reflection"):
+    for key in ("settled_at", "settlement_date", "rule_id", "verdict", "entry_price",
+                "exit_price", "raw_return", "benchmark_symbol", "benchmark_mapping",
+                "benchmark_return", "alpha", "holding_days", "metric_ref",
+                "observed_value", "comparator", "threshold", "series_fingerprint",
+                "reflection"):
         merged[f"s_{key}"] = settlement_row[key]
     return _Merged(merged)
+
+
+def _compare(observed: float, comparator: str, threshold: float) -> bool:
+    """阈值比较。`eq`/`neq` 用容差判等——浮点严格相等几乎总是错的。"""
+    tol = 1e-9
+    if comparator == "lt":
+        return observed < threshold
+    if comparator == "lte":
+        return observed <= threshold
+    if comparator == "gt":
+        return observed > threshold
+    if comparator == "gte":
+        return observed >= threshold
+    if comparator == "eq":
+        return abs(observed - threshold) <= tol
+    if comparator == "neq":
+        return abs(observed - threshold) > tol
+    raise LedgerError(f"comparator 非法：{comparator!r}")
+
+
+def _series_fingerprint(series: Sequence[tuple[str, Optional[float]]]) -> str:
+    """序列指纹：让"当时凭什么判 hit/miss"可复核，同时不留客户原始数据。
+
+    只对 (日期, 值) 做摘要——值本身是客户数据，指纹不是。复核方拿同一序列重算
+    指纹即可确认判定依据没被改动。
+    """
+    import hashlib
+
+    h = hashlib.sha256()
+    for d, v in series:
+        h.update(f"{d}|{'' if v is None else v!r};".encode("utf-8"))
+    return h.hexdigest()[:32]
 
 
 def _migrate_to_caller(con: sqlite3.Connection) -> None:
@@ -243,6 +380,86 @@ def _migrate_to_caller(con: sqlite3.Connection) -> None:
         (LEGACY,),
     )
     con.execute("DROP TABLE decisions_old")
+
+
+def _migrate_to_portfolio(con: sqlite3.Connection) -> None:
+    """把 record_kind / portfolio_key 加进既有库（幂等：可重复执行）。
+
+    **为什么要重建表而不是 ALTER TABLE**：`symbol` 原先 `NOT NULL`，而组合记录的 symbol
+    必须为 NULL。SQLite 无法放宽列约束，只能按新 schema 建表再搬行——与
+    `_migrate_to_caller` 同一手法。既有行一律 `record_kind='single'`、`portfolio_key=NULL`，
+    故旧幂等键在新索引下逐条等价（`COALESCE(symbol, NULL)` 就是 symbol）。
+    """
+    cols = {r[1] for r in con.execute("PRAGMA table_info(decisions)")}
+    if not cols or "record_kind" in cols:
+        return  # 新库（建表已带）或已迁移
+
+    con.execute("ALTER TABLE decisions RENAME TO decisions_old")
+    for stmt in SCHEMA_STATEMENTS:
+        if "CREATE TABLE IF NOT EXISTS decisions" in stmt or " ON decisions" in stmt:
+            con.execute(stmt)
+    con.execute(
+        "INSERT INTO decisions (decision_id, caller, record_kind, as_of, symbol, portfolio_key,"
+        " pack, skill, payload, target_weights, evidence, status, revises, revision_seq,"
+        " created_at)"
+        " SELECT decision_id, caller, 'single', as_of, symbol, NULL, pack, skill, payload,"
+        " target_weights, evidence, status, revises, revision_seq, created_at"
+        " FROM decisions_old"
+    )
+    con.execute("DROP TABLE decisions_old")
+
+
+def _migrate_to_decision_v2(con: sqlite3.Connection) -> None:
+    """把 v2 决策所需的列与阈值口径结算加进既有库（幂等：可重复执行）。
+
+    两处改动都要**重建表**：
+    * `decisions` 加 5 列——单靠 ALTER 加列无法同时加"三列全空或全齐"的 CHECK，
+      而那条 CHECK 正是防止出现"半个 v2 记录"的唯一屏障。
+    * `settlements` 要放宽 `entry_price` / `benchmark_*` / `alpha` 的 NOT NULL——SQLite
+      不支持 `ALTER COLUMN ... DROP NOT NULL`，只能按新 schema 建表再搬行。
+
+    历史结算行按 `rule_id='alpha_vs_benchmark'` 回填、`verdict` 由 `alpha > 0` 推导。
+    **那次推导是新增判断，不是恢复原值**：老行本来没有 verdict 概念。迁移日志与任何
+    基于历史数据的复盘输出都必须带这句，否则三个月后会有人把回填值当成当时就有的结论。
+    """
+    dcols = {r[1] for r in con.execute("PRAGMA table_info(decisions)")}
+    if dcols and "subject_kind" not in dcols:
+        con.execute("ALTER TABLE decisions RENAME TO decisions_old_v2")
+        for stmt in SCHEMA_STATEMENTS:
+            if "CREATE TABLE IF NOT EXISTS decisions" in stmt or " ON decisions" in stmt:
+                con.execute(stmt)
+        con.execute(
+            "INSERT INTO decisions (decision_id, caller, record_kind, as_of, symbol,"
+            " portfolio_key, pack, skill, payload, target_weights, evidence, status,"
+            " revises, revision_seq, created_at, subject_kind, subject_key, action,"
+            " preconditions, settlement_spec)"
+            " SELECT decision_id, caller, record_kind, as_of, symbol, portfolio_key,"
+            " pack, skill, payload, target_weights, evidence, status, revises,"
+            " revision_seq, created_at, NULL, NULL, NULL, NULL, NULL"
+            " FROM decisions_old_v2"
+        )
+        con.execute("DROP TABLE decisions_old_v2")
+
+    scols = {r[1] for r in con.execute("PRAGMA table_info(settlements)")}
+    if scols and "rule_id" not in scols:
+        con.execute("ALTER TABLE settlements RENAME TO settlements_old_v2")
+        for stmt in SCHEMA_STATEMENTS:
+            if "CREATE TABLE IF NOT EXISTS settlements" in stmt or " ON settlements" in stmt:
+                con.execute(stmt)
+        con.execute(
+            "INSERT INTO settlements (decision_id, settled_at, settlement_date, rule_id,"
+            " verdict, entry_price, exit_price, raw_return, benchmark_symbol,"
+            " benchmark_mapping, benchmark_entry_price, benchmark_exit_price,"
+            " benchmark_return, alpha, holding_days, metric_ref, observed_value,"
+            " comparator, threshold, series_fingerprint, reflection)"
+            " SELECT decision_id, settled_at, settlement_date, 'alpha_vs_benchmark',"
+            " CASE WHEN alpha > 0 THEN 'hit' ELSE 'miss' END,"
+            " entry_price, exit_price, raw_return, benchmark_symbol, benchmark_mapping,"
+            " benchmark_entry_price, benchmark_exit_price, benchmark_return, alpha,"
+            " holding_days, NULL, NULL, NULL, NULL, NULL, reflection"
+            " FROM settlements_old_v2"
+        )
+        con.execute("DROP TABLE settlements_old_v2")
 
 
 class LedgerStore:
@@ -294,7 +511,11 @@ class LedgerStore:
         con = self._connect()
         try:
             con.execute("BEGIN IMMEDIATE")
+            # 两个迁移都在建表之前跑：它们各自幂等，旧库走"rename → 按新 schema 建表
+            # → 搬行"，新库直接返回。索引必须等迁移完成后再建，否则旧表上会缺列。
             _migrate_to_caller(con)
+            _migrate_to_portfolio(con)
+            _migrate_to_decision_v2(con)
             for stmt in SCHEMA_STATEMENTS:
                 con.execute(stmt)
             con.execute("COMMIT")
@@ -343,10 +564,12 @@ class LedgerStore:
         *,
         caller: str,
         as_of: str,
-        symbol: str,
+        symbol: Optional[str] = None,
         pack: str,
         skill: str,
         payload: Any,
+        record_kind: str = "single",
+        portfolio_key: Optional[str] = None,
         target_weights: Any = None,
         evidence: Optional[Sequence[str]] = None,
         revises: Optional[str] = None,
@@ -365,18 +588,52 @@ class LedgerStore:
           同一判定要挂组合权重时传 `target_weights`（`TargetWeights`）。
         """
         a = check_iso_date(as_of, name="as_of")
-        sym = self._require_text(symbol, name="symbol")
+        kind = (record_kind or "single").strip()
+        if kind not in ("single", "portfolio"):
+            raise LedgerError(
+                f"record_kind={record_kind!r} must be 'single' or 'portfolio'"
+            )
         pk = self._require_text(pack, name="pack")
         sk = self._require_text(skill, name="skill")
         created_at = now if now is not None else _utc_now()
 
-        rating = self._check_payload(payload, as_of=a, symbol=sym, pack=pk, skill=sk)
+        # 主体字段与种类必须一致：同时给出或同时缺失都是错误。这里显式判而不是靠
+        # CHECK 约束兜底，因为要给出"哪两个字段冲突"的可读错误（约束只报 constraint failed）。
+        has_sym = symbol is not None and str(symbol).strip() != ""
+        has_pkey = portfolio_key is not None and str(portfolio_key).strip() != ""
+        if kind == "single":
+            if not has_sym:
+                raise LedgerError("record_kind='single' requires symbol")
+            if has_pkey:
+                raise LedgerError(
+                    "record_kind='single' must not carry portfolio_key "
+                    f"(got {portfolio_key!r})"
+                )
+        else:
+            if not has_pkey:
+                raise LedgerError("record_kind='portfolio' requires portfolio_key")
+            if has_sym:
+                raise LedgerError(
+                    "record_kind='portfolio' must not carry symbol "
+                    f"(got {symbol!r}); the subject of a portfolio record is portfolio_key"
+                )
+
+        subject = self._require_text(symbol if kind == "single" else portfolio_key, name="subject")
+        sym = symbol if kind == "single" else None
+
+        checked = self._check_payload(
+            payload, as_of=a, symbol=subject, pack=pk, skill=sk, record_kind=kind
+        )
         tw_json = self._check_target_weights(target_weights)
-        refs = self._check_evidence(evidence, payload=rating)
-        payload_json = _json_dumps(rating)
+        refs = self._check_evidence(evidence, payload=checked)
+        payload_json = _json_dumps(checked)
         evidence_json = _json_dumps(refs)
 
-        key = {"caller": caller, "as_of": a, "symbol": sym, "pack": pk, "skill": sk}
+        key = {
+            "caller": caller, "record_kind": kind, "as_of": a, "subject": subject,
+            "symbol": sym, "portfolio_key": (subject if kind == "portfolio" else None),
+            "pack": pk, "skill": sk,
+        }
         if revises is not None:
             return self._append_revision(
                 key, payload_json=payload_json, target_weights_json=tw_json,
@@ -397,11 +654,13 @@ class LedgerStore:
                                     reason="duplicate_key")
             decision_id = self.id_factory()
             con.execute(
-                "INSERT INTO decisions (decision_id, caller, as_of, symbol, pack, skill, payload, "
-                "target_weights, evidence, status, revises, revision_seq, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 0, ?)",
-                (decision_id, key["caller"], key["as_of"], key["symbol"], key["pack"],
-                 key["skill"], payload_json, target_weights_json, evidence_json, created_at),
+                "INSERT INTO decisions (decision_id, caller, record_kind, as_of, symbol,"
+                " portfolio_key, pack, skill, payload, target_weights, evidence, status,"
+                " revises, revision_seq, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 0, ?)",
+                (decision_id, key["caller"], key["record_kind"], key["as_of"], key["symbol"],
+                 key["portfolio_key"], key["pack"], key["skill"], payload_json,
+                 target_weights_json, evidence_json, created_at),
             )
             return self._result(con, decision_id, created=True, reason="created")
 
@@ -416,7 +675,7 @@ class LedgerStore:
                     f"revises={revises!r}: no such decision in the ledger; a revision must "
                     f"point at an existing decision_id"
                 )
-            for field in ("as_of", "symbol", "pack", "skill"):
+            for field in ("record_kind", "as_of", "symbol", "portfolio_key", "pack", "skill"):
                 if target[field] != key[field]:
                     raise RevisionConflict(
                         f"revises={revises!r} has {field}={target[field]!r} but the revision was "
@@ -441,11 +700,13 @@ class LedgerStore:
                                     reason="revision_duplicate")
             decision_id = self.id_factory()
             con.execute(
-                "INSERT INTO decisions (decision_id, caller, as_of, symbol, pack, skill, payload, "
-                "target_weights, evidence, status, revises, revision_seq, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
-                (decision_id, key["caller"], key["as_of"], key["symbol"], key["pack"],
-                 key["skill"], payload_json, target_weights_json, evidence_json,
+                "INSERT INTO decisions (decision_id, caller, record_kind, as_of, symbol,"
+                " portfolio_key, pack, skill, payload, target_weights, evidence, status,"
+                " revises, revision_seq, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                (decision_id, key["caller"], key["record_kind"], key["as_of"], key["symbol"],
+                 key["portfolio_key"], key["pack"], key["skill"], payload_json,
+                 target_weights_json, evidence_json,
                  tip["decision_id"], int(tip["revision_seq"]) + 1, created_at),
             )
             return self._result(con, decision_id, created=True, reason="revision_created",
@@ -511,12 +772,16 @@ class LedgerStore:
                 holding_days=hd,
                 benchmark_symbol=bench["benchmark_symbol"],
             )
+            # verdict 由 alpha 推导。这是**判定**，不是状态字段：alpha>0 记 hit，
+            # 反之为 miss；alpha 恰为 0 记 miss（不算赢，与 summarize 的口径一致）。
+            verdict = "hit" if window["alpha"] > 0 else "miss"
             con.execute(
-                "INSERT INTO settlements (decision_id, settled_at, settlement_date, entry_price, "
-                "exit_price, raw_return, benchmark_symbol, benchmark_mapping, "
-                "benchmark_entry_price, benchmark_exit_price, benchmark_return, alpha, "
-                "holding_days, reflection) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (did, settled_at, window["exit_date"], window["entry_price"],
+                "INSERT INTO settlements (decision_id, settled_at, settlement_date, rule_id, "
+                "verdict, entry_price, exit_price, raw_return, benchmark_symbol, "
+                "benchmark_mapping, benchmark_entry_price, benchmark_exit_price, "
+                "benchmark_return, alpha, holding_days, reflection)"
+                " VALUES (?, ?, ?, 'alpha_vs_benchmark', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (did, settled_at, window["exit_date"], verdict, window["entry_price"],
                  window["exit_price"], window["raw_return"], window["benchmark_symbol"],
                  bench["mapping"], window["benchmark_entry_price"],
                  window["benchmark_exit_price"], window["benchmark_return"], window["alpha"],
@@ -526,6 +791,219 @@ class LedgerStore:
             stored = self._settlement_row(con, did)
             return self._settlement_result(con, stored, created=True, reason="settled",
                                            reflection_ignored=False)
+
+    def settle_metric_threshold(
+        self,
+        *,
+        decision_id: str,
+        dates: Sequence[Any],
+        values: Sequence[Any],
+        as_of: str,
+        comparator: str,
+        threshold: float,
+        reflection: Optional[str] = None,
+        window_end: Optional[str] = None,
+        now: Optional[str] = None,
+    ) -> dict:
+        """按指标阈值结算一条决策（`metric_threshold` 口径）。
+
+        与价格口径的分工：那个问"跑赢基准多少"，这个问"指标有没有达到阈值"。
+        经营决策没有基准、没有成交价，只有这一种问法。
+
+        **三条不可退让**：
+
+        1. 序列由**调用方传入**，账本不取数、不联网。经营指标住在客户 cell 里，
+           账本只留 `metric_ref`、观测值、阈值与序列指纹——客户数据一行不出 cell。
+        2. 数据不足记 `insufficient_data`，**MUST NOT** 记 `miss`。把"不知道"当成
+           "判断错了"，会让复盘系统性地低估一个模式的准确率，而且再也查不出来。
+        3. 数据不足时**照样落一行结算**（`verdict='insufficient_data'`），不让记录停在
+           `pending` 而不给原因——那会让复盘误以为"还没到期"，一直等一个永不到来的结算。
+
+        与价格口径不同，这里**没有"持有期未满就拒结算"**：阈值结算的观察窗由
+        `window_end`（或 `as_of`）界定，窗未走完就如实记 `insufficient_data`。
+        拒绝落行的语义只适用于"价格口径不能用半窗算 alpha"那种情形。
+        """
+        a = check_iso_date(as_of, name="as_of")
+        did = self._require_text(decision_id, name="decision_id")
+        settled_at = now if now is not None else _utc_now()
+        if comparator not in ("lt", "lte", "gt", "gte", "eq", "neq"):
+            raise LedgerError(
+                f"comparator 非法：{comparator!r}；合法集合 "
+                "['lt', 'lte', 'gt', 'gte', 'eq', 'neq']"
+            )
+        thr = _clean_float(threshold, name="threshold")
+        end = check_iso_date(window_end or a, name="window_end")
+        if end > a:
+            raise LedgerError(f"window_end ({end}) 晚于 as_of ({a})：不得用未来窗口结算")
+
+        series = build_series(dates, values, name="metric")
+        # 未来点拒绝：与价格口径同一姿态——结算只能用 as_of 当时已知的数据。
+        # 静默截断会让"用了未来数据"看起来像"窗口就这么长"，两种情形在结果里同形。
+        future = [d for d, _v in series if d > a]
+        if future:
+            raise LedgerError(
+                f"序列含晚于 as_of={a} 的数据点：{', '.join(future[:5])}"
+                + (" 等" if len(future) > 5 else "")
+                + "；结算不得使用未来数据"
+            )
+        fingerprint = _series_fingerprint(series)
+
+        with self._write_tx() as con:
+            row = con.execute(
+                "SELECT * FROM decisions WHERE decision_id = ?", (did,)
+            ).fetchone()
+            if row is None:
+                raise UnknownDecision(
+                    f"no decision {did!r} in the ledger; settle() works on a recorded decision"
+                )
+            existing = self._settlement_row(con, did)
+            if existing is not None:
+                ignored = reflection is not None and reflection != existing["reflection"]
+                return self._settlement_result(con, existing, created=False,
+                                               reason="duplicate_settlement",
+                                               reflection_ignored=ignored)
+
+            in_window = [p for p in series if p[0] <= end]
+            if not in_window:
+                verdict = "insufficient_data"
+                observed = None
+                reason = "insufficient_data"
+            else:
+                observed = in_window[-1][1] if in_window[-1][1] is not None else None
+                if observed is None:
+                    verdict = "insufficient_data"
+                    reason = "insufficient_data"
+                else:
+                    verdict = "hit" if _compare(observed, comparator, thr) else "miss"
+                    reason = "settled"
+
+            con.execute(
+                "INSERT INTO settlements (decision_id, settled_at, settlement_date, rule_id, "
+                "verdict, metric_ref, observed_value, comparator, threshold, "
+                "series_fingerprint, reflection)"
+                " VALUES (?, ?, ?, 'metric_threshold', ?, ?, ?, ?, ?, ?, ?)",
+                (did, settled_at, end, verdict,
+                 (row["subject_key"] or row["symbol"]), observed, comparator, thr,
+                 fingerprint, reflection),
+            )
+            con.execute("UPDATE decisions SET status = 'settled' WHERE decision_id = ?", (did,))
+            stored = self._settlement_row(con, did)
+            return self._settlement_result(con, stored, created=True, reason=reason,
+                                           reflection_ignored=False)
+
+    def settle_portfolio(
+        self,
+        *,
+        decision_id: str,
+        legs: Mapping[str, tuple[Sequence[Any], Sequence[Any]]],
+        benchmark_dates: Sequence[Any],
+        benchmark_prices: Sequence[Any],
+        as_of: str,
+        benchmark_symbol: str,
+        reflection: Optional[str] = None,
+        holding_days: Optional[int] = None,
+        now: Optional[str] = None,
+    ) -> dict:
+        """到期结算一条**组合**记录：整期权重 + 全部标的价格序列 + 基准序列。
+
+        - 权重取自记录的 `payload`（`PortfolioIntent`），**不接受调用方另传一份**：
+          否则"这笔单依据哪份权重"会有两个答案，而两份迟早不一致。
+        - 整期原子：任一腿不覆盖持有期 → 整次拒绝，记录保持 `pending`（不落半行）。
+        - 幂等：已有组合结算行 → 返回既有结果，不插第二行。
+        - 现金部分收益记零并单独报出，不摊进标的收益。
+        - 基准必须显式给出：组合没有单一标的可做后缀映射。
+        """
+        a = check_iso_date(as_of, name="as_of")
+        did = self._require_text(decision_id, name="decision_id")
+        hd = check_holding_days(self.holding_days if holding_days is None else holding_days)
+        settled_at = now if now is not None else _utc_now()
+
+        with self._write_tx() as con:
+            row = con.execute(
+                "SELECT * FROM decisions WHERE decision_id = ?", (did,)
+            ).fetchone()
+            if row is None:
+                raise UnknownDecision(
+                    f"no decision {did!r} in the ledger; settle_portfolio() works on a "
+                    "recorded decision"
+                )
+            if row["record_kind"] != "portfolio":
+                raise LedgerError(
+                    f"decision {did!r} has record_kind={row['record_kind']!r}; "
+                    "settle_portfolio() only settles portfolio records "
+                    "(use settle() for a single-symbol record)"
+                )
+
+            existing = con.execute(
+                "SELECT * FROM portfolio_settlements WHERE decision_id = ?", (did,)
+            ).fetchone()
+            if existing is not None:
+                ignored = reflection is not None and reflection != existing["reflection"]
+                return self._portfolio_settlement_result(
+                    existing, created=False, reason="duplicate_settlement",
+                    reflection_ignored=ignored,
+                )
+
+            payload = _json_loads(row["payload"]) or {}
+            weights = payload.get("weights") or {}
+            if not weights:
+                raise SettlementRefused(
+                    f"decision {did!r} carries no weights; an empty portfolio cannot be settled"
+                )
+
+            window = portfolio_settlement_window(
+                entry_date=row["as_of"],
+                legs=legs,
+                weights=weights,
+                benchmark_dates=benchmark_dates,
+                benchmark_values=benchmark_prices,
+                as_of=a,
+                holding_days=hd,
+                benchmark_symbol=benchmark_symbol,
+            )
+            con.execute(
+                "INSERT INTO portfolio_settlements (decision_id, settled_at, settlement_date,"
+                " raw_return, invested_weight, cash_weight, cash_return, benchmark_symbol,"
+                " benchmark_mapping, benchmark_return, alpha, holding_days, legs, reflection)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (did, settled_at, window["exit_date"], window["raw_return"],
+                 window["invested_weight"], window["cash_weight"], window["cash_return"],
+                 window["benchmark_symbol"], "explicit", window["benchmark_return"],
+                 window["alpha"], window["holding_days"],
+                 _json_dumps(window["leg_returns"]), reflection),
+            )
+            con.execute("UPDATE decisions SET status = 'settled' WHERE decision_id = ?", (did,))
+            stored = con.execute(
+                "SELECT * FROM portfolio_settlements WHERE decision_id = ?", (did,)
+            ).fetchone()
+            return self._portfolio_settlement_result(
+                stored, created=True, reason="settled", reflection_ignored=False
+            )
+
+    @staticmethod
+    def _portfolio_settlement_result(row: sqlite3.Row, *, created: bool, reason: str,
+                                     reflection_ignored: bool) -> dict:
+        return {
+            "decision_id": row["decision_id"],
+            "created": created,
+            "reason": reason,
+            "reflection_ignored": reflection_ignored,
+            "settlement": {
+                "settled_at": row["settled_at"],
+                "settlement_date": row["settlement_date"],
+                "raw_return": _clean_float_or_none(row["raw_return"], name="raw_return"),
+                "invested_weight": _clean_float(row["invested_weight"], name="invested_weight"),
+                "cash_weight": _clean_float(row["cash_weight"], name="cash_weight"),
+                "cash_return": _clean_float(row["cash_return"], name="cash_return"),
+                "benchmark_symbol": row["benchmark_symbol"],
+                "benchmark_mapping": row["benchmark_mapping"],
+                "benchmark_return": _clean_float_or_none(row["benchmark_return"], name="benchmark_return"),
+                "alpha": _clean_float_or_none(row["alpha"], name="alpha"),
+                "holding_days": int(row["holding_days"]),
+                "leg_returns": _json_loads(row["legs"]) or {},
+                "reflection": row["reflection"],
+            },
+        }
 
     # ── 查询 ─────────────────────────────────────────────────
 
@@ -574,7 +1052,10 @@ class LedgerStore:
             "s.entry_price AS s_entry_price, s.exit_price AS s_exit_price, "
             "s.raw_return AS s_raw_return, s.benchmark_symbol AS s_benchmark_symbol, "
             "s.benchmark_mapping AS s_benchmark_mapping, s.benchmark_return AS s_benchmark_return, "
-            "s.alpha AS s_alpha, s.holding_days AS s_holding_days, s.reflection AS s_reflection "
+            "s.alpha AS s_alpha, s.holding_days AS s_holding_days, s.reflection AS s_reflection, "
+            "s.rule_id AS s_rule_id, s.verdict AS s_verdict, s.metric_ref AS s_metric_ref, "
+            "s.observed_value AS s_observed_value, s.comparator AS s_comparator, "
+            "s.threshold AS s_threshold, s.series_fingerprint AS s_series_fingerprint "
             "FROM decisions d JOIN settlements s ON s.decision_id = d.decision_id "
             f"WHERE {' AND '.join(where)} "
         )
@@ -636,8 +1117,8 @@ class LedgerStore:
             rows = self._settled_rows(con, as_of=a, caller=caller)
 
         groups: list[dict] = []
-        for pack_name, skill_name in keys:
-            base = {"pack": pack_name, "skill": skill_name}
+        for pack_name, skill_name, kind in keys:
+            base = {"pack": pack_name, "skill": skill_name, "record_kind": kind}
             if hd_list is None:
                 groups.append(self._stats_row(base, rows, holding=None))
             else:
@@ -647,13 +1128,184 @@ class LedgerStore:
         return {
             "as_of": a,
             "only_settled": True,
+            # record_kind 恒在分组维度里：组合 alpha 与单票 alpha 混入同一个胜率，
+            # 那个胜率就没有主语了（spec: 聚合不得混两类）。
             "group_by": (["pack", "skill"] if group_by_skill else ["pack"])
+            + ["record_kind"]
             + (["holding_days"] if group_by_holding else []),
             "holding_days": hd_list,
             "registered_packs": sorted({k[0] for k in keys}),
             "rows": groups,
             "counts": {"rows": len(groups), "settled_rows_in_scope": len(rows)},
         }
+
+    def list_pending(
+        self,
+        *,
+        caller: str,
+        pack: Optional[str] = None,
+        record_kind: Optional[str] = None,
+        as_of_from: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+        holding_days: Optional[int] = None,
+        today: Optional[str] = None,
+    ) -> dict:
+        """列出**待结算**记录（分页 + 总数），供定时复盘使用。
+
+        ## 为什么必须要这个入口
+
+        `retrieve()` 只回**已结算且结算日 ≤ as_of** 的记录（点内纪律），所以它天然
+        看不到待结算清单。此前做到期复盘只能靠"落账时自己记住 decision_id"——对定时
+        任务等于没有。没有列举入口，复盘岗结构性做不了。
+
+        ## 未到期 ≠ 不存在
+
+        未到期的记录**照样在清单里**，带 `due` 与 `missing_trading_days` 标注。把它们
+        隐去会让"这个账本没东西要结"与"有 12 条还没到期"变成同一个输出——而这两件事
+        的处置完全不同（前者收工，后者等）。
+
+        到期日按交易日推定：`due` = `as_of` + `holding_days` 个**自然日**的粗估，
+        精确交易日以结算时传入序列的日期集合为准（账本不内置日历）；故这里给的是
+        `due_estimate` 而不是承诺值。
+        """
+        lim = self._require_limit(limit, name="limit")
+        off = self._require_limit(offset, name="offset")
+        pk = self._require_text(pack, name="pack") if pack is not None else None
+        kind = None
+        if record_kind is not None:
+            kind = record_kind.strip()
+            if kind not in ("single", "portfolio"):
+                raise LedgerError(
+                    f"record_kind={record_kind!r} must be 'single' or 'portfolio'"
+                )
+        since = check_iso_date(as_of_from, name="as_of_from") if as_of_from else None
+        hd = check_holding_days(self.holding_days if holding_days is None else holding_days)
+        ref_day = check_iso_date(today, name="today") if today else None
+
+        where = ["caller = ?", "status = 'pending'"]
+        params: list[Any] = [caller]
+        if pk is not None:
+            where.append("pack = ?")
+            params.append(pk)
+        if kind is not None:
+            where.append("record_kind = ?")
+            params.append(kind)
+        if since is not None:
+            where.append("as_of >= ?")
+            params.append(since)
+        clause = " AND ".join(where)
+
+        with self._read() as con:
+            total = con.execute(
+                f"SELECT COUNT(*) AS n FROM decisions WHERE {clause}", params
+            ).fetchone()["n"]
+            rows = con.execute(
+                f"SELECT * FROM decisions WHERE {clause} "
+                "ORDER BY as_of ASC, created_at ASC, decision_id ASC LIMIT ? OFFSET ?",
+                [*params, lim, off],
+            ).fetchall()
+
+            items = []
+            for row in rows:
+                entry = self._decision_item(con, row)
+                due = self._due_estimate(row["as_of"], hd)
+                entry["due_estimate"] = due
+                entry["holding_days"] = hd
+                entry["matured"] = bool(ref_day and due and due <= ref_day)
+                if ref_day and due and not entry["matured"]:
+                    gap = (_date.fromisoformat(due) - _date.fromisoformat(ref_day)).days
+                    entry["missing_trading_days_estimate"] = max(0, gap)
+                else:
+                    entry["missing_trading_days_estimate"] = 0
+                items.append(entry)
+
+        return {
+            "caller": caller,
+            "filters": {"pack": pk, "record_kind": kind, "as_of_from": since},
+            "pagination": {"limit": lim, "offset": off, "total": int(total),
+                           "returned": len(items)},
+            "holding_days": hd,
+            "today": ref_day,
+            "items": items,
+        }
+
+    @staticmethod
+    def _due_estimate(as_of: str, holding_days: int) -> str:
+        """到期日的粗估（自然日）。精确值取决于调用方结算窗的交易日集合。"""
+        return (_date.fromisoformat(as_of) + timedelta(days=holding_days)).isoformat()
+
+    def record_risk_thresholds(
+        self,
+        *,
+        caller: str,
+        thresholds: Mapping[str, Any],
+        reason: str,
+        scope: str = "default",
+        now: Optional[str] = None,
+    ) -> dict:
+        """追加一条阈值变更记录。返回本条 + 上一条（便于核对旧值）。
+
+        阈值必须四项齐全才允许落账：只写一半的阈值表，读出来就是"不可用"，
+        而那与"从没配过"在运维上是两件事。
+        """
+        from ..risk import THRESHOLD_KEYS
+
+        missing = [k for k in THRESHOLD_KEYS if (thresholds or {}).get(k) is None]
+        if missing:
+            raise LedgerError(
+                f"thresholds missing {missing}; a partial threshold set reads as "
+                "unavailable, which is indistinguishable from never configured"
+            )
+        why = self._require_text(reason, name="reason")
+        sc = self._require_text(scope, name="scope")
+        stamp = now if now is not None else _utc_now()
+        payload = _json_dumps({k: thresholds[k] for k in THRESHOLD_KEYS
+                               if k in thresholds}
+                              | {k: thresholds[k] for k in thresholds
+                                 if k not in THRESHOLD_KEYS})
+
+        with self._write_tx() as con:
+            prev = con.execute(
+                "SELECT * FROM risk_thresholds WHERE caller = ? AND scope = ? "
+                "ORDER BY id DESC LIMIT 1", (caller, sc)
+            ).fetchone()
+            con.execute(
+                "INSERT INTO risk_thresholds (caller, scope, thresholds, reason, recorded_at)"
+                " VALUES (?, ?, ?, ?, ?)", (caller, sc, payload, why, stamp),
+            )
+            row = con.execute(
+                "SELECT * FROM risk_thresholds WHERE caller = ? AND scope = ? "
+                "ORDER BY id DESC LIMIT 1", (caller, sc)
+            ).fetchone()
+            return {
+                "caller": caller,
+                "scope": sc,
+                "current": {"thresholds": _json_loads(row["thresholds"]),
+                            "reason": row["reason"], "recorded_at": row["recorded_at"],
+                            "id": int(row["id"])},
+                "previous": (
+                    None if prev is None else
+                    {"thresholds": _json_loads(prev["thresholds"]),
+                     "reason": prev["reason"], "recorded_at": prev["recorded_at"],
+                     "id": int(prev["id"])}
+                ),
+                "counts": self._counts(con),
+            }
+
+    def latest_risk_thresholds(self, *, caller: str,
+                               scope: str = "default") -> Optional[dict]:
+        """当前生效阈值（最新一条）。没有记录时返回 None——**不返回空默认值**。"""
+        sc = self._require_text(scope, name="scope")
+        with self._read() as con:
+            row = con.execute(
+                "SELECT * FROM risk_thresholds WHERE caller = ? AND scope = ? "
+                "ORDER BY id DESC LIMIT 1", (caller, sc)
+            ).fetchone()
+        if row is None:
+            return None
+        return {"thresholds": _json_loads(row["thresholds"]), "reason": row["reason"],
+                "recorded_at": row["recorded_at"], "id": int(row["id"]), "scope": sc}
 
     def row_counts(self) -> dict:
         """行数快照——幂等断言"行数不变"时可核对的显式事实。"""
@@ -662,25 +1314,32 @@ class LedgerStore:
 
     # ── 内部：行读取 ──────────────────────────────────────────
 
-    def _initial_row(self, con: sqlite3.Connection, *, caller: str, as_of: str, symbol: str,
-                     pack: str, skill: str) -> Optional[sqlite3.Row]:
+    def _initial_row(self, con: sqlite3.Connection, *, caller: str, record_kind: str,
+                     as_of: str, subject: str, symbol: Optional[str] = None,
+                     portfolio_key: Optional[str] = None, pack: str, skill: str
+                     ) -> Optional[sqlite3.Row]:
+        """按幂等键取初始行。主体用 `subject` 统一寻址——单体走 symbol，组合走 portfolio_key。"""
         return con.execute(
-            "SELECT * FROM decisions WHERE caller = ? AND as_of = ? AND symbol = ? "
-            "AND pack = ? AND skill = ? AND revises IS NULL",
-            (caller, as_of, symbol, pack, skill),
+            "SELECT * FROM decisions WHERE caller = ? AND record_kind = ? AND as_of = ? "
+            "AND COALESCE(symbol, portfolio_key) = ? AND pack = ? AND skill = ? "
+            "AND revises IS NULL",
+            (caller, record_kind, as_of, subject, pack, skill),
         ).fetchone()
 
-    def _tip_row(self, con: sqlite3.Connection, *, caller: str, as_of: str, symbol: str,
-                 pack: str, skill: str) -> sqlite3.Row:
+    def _tip_row(self, con: sqlite3.Connection, *, caller: str, record_kind: str,
+                 as_of: str, subject: str, symbol: Optional[str] = None,
+                 portfolio_key: Optional[str] = None, pack: str, skill: str
+                 ) -> sqlite3.Row:
         row = con.execute(
-            "SELECT * FROM decisions WHERE caller = ? AND as_of = ? AND symbol = ? "
-            "AND pack = ? AND skill = ? ORDER BY revision_seq DESC LIMIT 1",
-            (caller, as_of, symbol, pack, skill),
+            "SELECT * FROM decisions WHERE caller = ? AND record_kind = ? AND as_of = ? "
+            "AND COALESCE(symbol, portfolio_key) = ? AND pack = ? AND skill = ? "
+            "ORDER BY revision_seq DESC LIMIT 1",
+            (caller, record_kind, as_of, subject, pack, skill),
         ).fetchone()
         if row is None:
             raise UnknownDecision(
-                f"no decision with key (caller={caller}, as_of={as_of}, symbol={symbol}, "
-                f"pack={pack}, skill={skill}) in the ledger"
+                f"no decision with key (caller={caller}, record_kind={record_kind}, "
+                f"as_of={as_of}, subject={subject}, pack={pack}, skill={skill}) in the ledger"
             )
         return row
 
@@ -715,21 +1374,35 @@ class LedgerStore:
             settlement = {
                 "settled_at": row["s_settled_at"],
                 "settlement_date": row["s_settlement_date"],
-                "entry_price": _clean_float(row["s_entry_price"], name="entry_price"),
-                "exit_price": _clean_float(row["s_exit_price"], name="exit_price"),
-                "raw_return": _clean_float(row["s_raw_return"], name="raw_return"),
+                "rule_id": row["s_rule_id"],
+                "verdict": row["s_verdict"],
+                "entry_price": _clean_float_or_none(row["s_entry_price"], name="entry_price"),
+                "exit_price": _clean_float_or_none(row["s_exit_price"], name="exit_price"),
+                "raw_return": _clean_float_or_none(row["s_raw_return"], name="raw_return"),
                 "benchmark_symbol": row["s_benchmark_symbol"],
                 "benchmark_mapping": row["s_benchmark_mapping"],
-                "benchmark_return": _clean_float(row["s_benchmark_return"],
-                                                 name="benchmark_return"),
-                "alpha": _clean_float(row["s_alpha"], name="alpha"),
-                "holding_days": int(row["s_holding_days"]),
+                "benchmark_return": _clean_float_or_none(row["s_benchmark_return"],
+                                                         name="benchmark_return"),
+                "alpha": _clean_float_or_none(row["s_alpha"], name="alpha"),
+                "holding_days": (int(row["s_holding_days"])
+                                 if row["s_holding_days"] is not None else None),
+                "metric_ref": row["s_metric_ref"],
+                "observed_value": _clean_float_or_none(row["s_observed_value"],
+                                                       name="observed_value"),
+                "comparator": row["s_comparator"],
+                "threshold": _clean_float_or_none(row["s_threshold"], name="threshold"),
+                "series_fingerprint": row["s_series_fingerprint"],
                 "reflection": row["s_reflection"],
             }
         return {
             "decision_id": row["decision_id"],
             "as_of": row["as_of"],
+            # 主体按种类二选一：单体看 symbol，组合看 portfolio_key。复盘岗必须知道
+            # 该用哪个结算入口，所以种类与主体都要出现在条目里。
+            "record_kind": row["record_kind"],
+            "subject": row["symbol"] if row["record_kind"] == "single" else row["portfolio_key"],
             "symbol": row["symbol"],
+            "portfolio_key": row["portfolio_key"],
             "pack": row["pack"],
             "skill": row["skill"],
             "status": row["status"],
@@ -781,18 +1454,26 @@ class LedgerStore:
             "status": decision["status"],
             "settled_at": row["settled_at"],
             "settlement_date": row["settlement_date"],
-            "entry_price": _clean_float(row["entry_price"], name="entry_price"),
-            "exit_price": _clean_float(row["exit_price"], name="exit_price"),
-            "raw_return": _clean_float(row["raw_return"], name="raw_return"),
+            "entry_price": _clean_float_or_none(row["entry_price"], name="entry_price"),
+            "exit_price": _clean_float_or_none(row["exit_price"], name="exit_price"),
+            "raw_return": _clean_float_or_none(row["raw_return"], name="raw_return"),
             "benchmark_symbol": row["benchmark_symbol"],
             "benchmark_mapping": row["benchmark_mapping"],
-            "benchmark_entry_price": _clean_float(row["benchmark_entry_price"],
+            "benchmark_entry_price": _clean_float_or_none(row["benchmark_entry_price"],
                                                   name="benchmark_entry_price"),
-            "benchmark_exit_price": _clean_float(row["benchmark_exit_price"],
+            "benchmark_exit_price": _clean_float_or_none(row["benchmark_exit_price"],
                                                  name="benchmark_exit_price"),
-            "benchmark_return": _clean_float(row["benchmark_return"], name="benchmark_return"),
-            "alpha": _clean_float(row["alpha"], name="alpha"),
-            "holding_days": int(row["holding_days"]),
+            "benchmark_return": _clean_float_or_none(row["benchmark_return"], name="benchmark_return"),
+            "rule_id": row["rule_id"],
+            "verdict": row["verdict"],
+            "alpha": _clean_float_or_none(row["alpha"], name="alpha"),
+            "holding_days": int(row["holding_days"]) if row["holding_days"] is not None else None,
+            "metric_ref": row["metric_ref"],
+            "observed_value": _clean_float_or_none(row["observed_value"],
+                                                  name="observed_value"),
+            "comparator": row["comparator"],
+            "threshold": _clean_float_or_none(row["threshold"], name="threshold"),
+            "series_fingerprint": row["series_fingerprint"],
             "reflection": row["reflection"],
             "reflection_ignored": bool(reflection_ignored),
             "counts": self._counts(con),
@@ -802,7 +1483,7 @@ class LedgerStore:
 
     def _group_keys(self, con: sqlite3.Connection, *, requested: Optional[list[str]],
                     group_by_skill: bool,
-                    caller: str) -> list[tuple[str, Optional[str]]]:
+                    caller: str) -> list[tuple[str, Optional[str], str]]:
         """组集合 = 已注册（decisions 表里出现过的）∪ 显式请求。
 
         显式请求一个**从未落过记录**的 pack 时给一行 (pack, None) 且样本数 0——这正是
@@ -811,27 +1492,38 @@ class LedgerStore:
         """
         if group_by_skill:
             rows = con.execute(
-                "SELECT DISTINCT pack, skill FROM decisions WHERE caller = ? ORDER BY pack, skill",
+                "SELECT DISTINCT pack, skill, record_kind FROM decisions WHERE caller = ? "
+                "ORDER BY pack, skill, record_kind",
                 (caller,),
             ).fetchall()
-            keys: list[tuple[str, Optional[str]]] = [(r["pack"], r["skill"]) for r in rows]
+            keys = [(r["pack"], r["skill"], r["record_kind"]) for r in rows]
         else:
             rows = con.execute(
-                "SELECT DISTINCT pack FROM decisions WHERE caller = ? ORDER BY pack", (caller,)
+                "SELECT DISTINCT pack, record_kind FROM decisions WHERE caller = ? "
+                "ORDER BY pack, record_kind",
+                (caller,),
             ).fetchall()
-            keys = [(r["pack"], None) for r in rows]
+            keys = [(r["pack"], None, r["record_kind"]) for r in rows]
         if requested:
-            known = {k[0] for k in keys}
+            # 显式请求但从未落过记录的 pack：按两种记录种类各补一行零样本，
+            # 而不是只补一行——"这个 pack 的组合记录还没样本"与"这个 pack 不存在"
+            # 是两件事，合并成一行会把前者抹掉。
+            known = {(k[0], k[2]) for k in keys}
+            # 只对本调用者的账本里**实际出现过**的记录种类补零：纯单体账本的输出
+            # 因此与引入 record_kind 之前逐行相同（不为一个从未有组合记录的账本
+            # 凭空造出一行组合零样本）。账本为空时退回 'single'。
+            observed = sorted({k[2] for k in keys}) or ["single"]
             for p in requested:
-                if p not in known:
-                    keys.append((p, None))
-        seen: set[tuple[str, Optional[str]]] = set()
-        out: list[tuple[str, Optional[str]]] = []
+                for kind in observed:
+                    if (p, kind) not in known:
+                        keys.append((p, None, kind))
+        seen: set[tuple[str, Optional[str], str]] = set()
+        out: list[tuple[str, Optional[str], str]] = []
         for k in keys:
             if k not in seen:
                 seen.add(k)
                 out.append(k)
-        return sorted(out, key=lambda k: (k[0], k[1] or ""))
+        return sorted(out, key=lambda k: (k[0], k[1] or "", k[2]))
 
     def _settled_rows(self, con: sqlite3.Connection, *, as_of: str,
                       caller: str) -> list[dict]:
@@ -841,28 +1533,82 @@ class LedgerStore:
         不是"丢掉了别的组的样本"——若在这里过滤，显式请求 `pack A` 会让已注册的
         pack B 显示 samples=0（把"没查"伪装成"没样本"）。组过滤在 `_stats_row` 里做。
         """
+        # 两类结算各在自己的表里，统计口径必须都取——否则组合记录的组会出现
+        # samples=0（"有这个组但没样本"），把"类别存在"误报成"类别没样本"。
+        # rule_id / verdict 必须一起取出来：阈值口径的结算**没有 alpha**，把它和
+        # 价格口径混在同一个胜率里，那个胜率就没有主语了。portfolio_settlements 是
+        # 独立的表且恒为价格口径，故补常量 'alpha_vs_benchmark'（它没有 verdict 概念）。
         rows = con.execute(
-            "SELECT d.pack, d.skill, s.holding_days, s.raw_return, s.alpha "
+            "SELECT d.pack, d.skill, d.record_kind, s.holding_days, s.raw_return, s.alpha, "
+            "s.rule_id AS rule_id, s.verdict AS verdict "
             "FROM decisions d JOIN settlements s ON s.decision_id = d.decision_id "
-            "WHERE d.status = 'settled' AND s.settlement_date <= ? AND d.caller = ?",
-            (as_of, caller),
+            "WHERE d.status = 'settled' AND s.settlement_date <= ? AND d.caller = ? "
+            "UNION ALL "
+            "SELECT d.pack, d.skill, d.record_kind, p.holding_days, p.raw_return, p.alpha, "
+            "'alpha_vs_benchmark' AS rule_id, NULL AS verdict "
+            "FROM decisions d JOIN portfolio_settlements p ON p.decision_id = d.decision_id "
+            "WHERE d.status = 'settled' AND p.settlement_date <= ? AND d.caller = ?",
+            (as_of, caller, as_of, caller),
         ).fetchall()
         return [
             {
                 "pack": r["pack"],
                 "skill": r["skill"],
-                "holding_days": int(r["holding_days"]),
-                "raw_return": _clean_float(r["raw_return"], name="raw_return"),
-                "alpha": _clean_float(r["alpha"], name="alpha"),
+                "record_kind": r["record_kind"],
+                # 阈值口径的结算没有持有期概念（它的窗口是观察窗，不是持有期）。
+                "holding_days": (int(r["holding_days"])
+                                 if r["holding_days"] is not None else None),
+                "raw_return": _clean_float_or_none(r["raw_return"], name="raw_return"),
+                "alpha": _clean_float_or_none(r["alpha"], name="alpha"),
+                "rule_id": r["rule_id"],
+                "verdict": r["verdict"],
             }
             for r in rows
         ]
+
+    @staticmethod
+    def _rule_breakdown(rows: list[dict]) -> dict:
+        """按结算口径分开计数：两种口径的问法不同，不能合成一个数。
+
+        价格口径回答"跑赢基准多少"；阈值口径回答"指标有没有达到阈值"。后者的
+        `insufficient_data` **既不是命中也不是未命中**，必须单列——把它算进 miss
+        就等于把"不知道"记成"判断错了"。
+        """
+        out: dict[str, dict] = {}
+        for rule in sorted({r.get("rule_id") or "alpha_vs_benchmark" for r in rows}):
+            sel = [r for r in rows if (r.get("rule_id") or "alpha_vs_benchmark") == rule]
+            if rule == "metric_threshold":
+                verdicts = [r.get("verdict") for r in sel]
+                hits = sum(1 for v in verdicts if v == "hit")
+                misses = sum(1 for v in verdicts if v == "miss")
+                insufficient = sum(1 for v in verdicts if v == "insufficient_data")
+                decided = hits + misses
+                out[rule] = {
+                    "samples": len(sel),
+                    "hits": hits,
+                    "misses": misses,
+                    "insufficient_data": insufficient,
+                    # 命中率的分母是"有结论的那些"，不含 insufficient_data。
+                    "hit_rate": (hits / decided) if decided else None,
+                }
+            else:
+                alphas = [r["alpha"] for r in sel if r["alpha"] is not None]
+                wins = sum(1 for a in alphas if a > 0)
+                out[rule] = {
+                    "samples": len(sel),
+                    "alpha_samples": len(alphas),
+                    "wins": wins,
+                    "mean_alpha": _mean(alphas) if alphas else None,
+                    "win_rate": (wins / len(alphas)) if alphas else None,
+                }
+        return out
 
     @staticmethod
     def _stats_row(base: dict, rows: list[dict], *, holding: Optional[int]) -> dict:
         sel = [
             r for r in rows
             if r["pack"] == base["pack"]
+            and r["record_kind"] == base["record_kind"]
             and (base["skill"] is None or r["skill"] == base["skill"])
             and (holding is None or r["holding_days"] == holding)
         ]
@@ -872,17 +1618,26 @@ class LedgerStore:
         out["samples"] = len(sel)
         if not sel:
             # 空组：显式 0 + null 比值（"没有样本"既不是"不存在"，也不是"胜率 0"）
-            out.update({"wins": 0, "mean_alpha": None, "win_rate": None,
-                        "mean_raw_return": None})
+            out.update({"wins": 0, "alpha_samples": 0, "mean_alpha": None,
+                        "win_rate": None, "mean_raw_return": None, "by_rule": {}})
             return out
-        alphas = [r["alpha"] for r in sel]
-        raws = [r["raw_return"] for r in sel]
+
+        # 只有 alpha 口径的行才能进"胜率 / 平均 alpha"。阈值口径的结算没有 alpha，
+        # 把它的 NULL 当成 0 参与均值，等于把"另一种问法"记成"跑输基准"——胜率会被
+        # 系统性拉低，而且再也无法从输出里看出是哪种口径造成的。
+        alpha_rows = [r for r in sel if r["alpha"] is not None]
+        alphas = [r["alpha"] for r in alpha_rows]
+        raws = [r["raw_return"] for r in alpha_rows]
         wins = sum(1 for a in alphas if a > 0)
         out.update({
             "wins": wins,
-            "mean_alpha": _mean(alphas),
-            "win_rate": wins / len(alphas),
-            "mean_raw_return": _mean(raws),
+            # 显式给出 alpha 口径的样本数：否则 win_rate 的分母是谁无从判断，
+            # 而"3 个样本里赢 2 个"与"6 个里赢 2 个"读起来一样。
+            "alpha_samples": len(alpha_rows),
+            "mean_alpha": _mean(alphas) if alphas else None,
+            "win_rate": (wins / len(alphas)) if alphas else None,
+            "mean_raw_return": _mean(raws) if raws else None,
+            "by_rule": LedgerStore._rule_breakdown(sel),
         })
         return out
 
@@ -902,15 +1657,32 @@ class LedgerStore:
 
     @staticmethod
     def _check_payload(payload: Any, *, as_of: str, symbol: str, pack: str,
-                       skill: str) -> dict:
-        """`payload` 必须是合法 `Rating`，且与记录键逐项一致（不一致即拒绝并点名两边）。"""
+                       skill: str, record_kind: str = "single") -> dict:
+        """`payload` 必须是合法契约实例，且与记录键逐项一致（不一致即拒绝并点名两边）。
+
+        `record_kind='single'` → `Rating`（键维度 `as_of` / `subject`）；
+        `record_kind='portfolio'` → `PortfolioIntent`（无 `subject` 字段，键维度只有 `as_of`）。
+        两类都要 `producer.pack/skill` 与记录键一致——产出方可追溯是两类记录的共同要求。
+        """
         if hasattr(payload, "to_dict"):
             payload = payload.to_dict()
-        result = validate(payload, kind="rating")
+        # v2 决策（有 subject_kind）走 Decision 校验；其余仍按 Rating/PortfolioIntent。
+        # 判据用字段存在性而不是 schema_version：v2 要求的正是"主体种类 + 动作"这一对，
+        # 缺了它就不是 v2，哪怕版本号写着 2。
+        if isinstance(payload, dict) and "subject_kind" in payload:
+            kind = "decision"
+        else:
+            kind = "portfolio_intent" if record_kind == "portfolio" else "rating"
+        result = validate(payload, kind=kind)
         if not result["valid"]:
             first = result["errors"][0]
             raise ContractError(first["path"], first["reason"])
-        for field, given in (("as_of", as_of), ("subject", symbol)):
+        id_fields = (("as_of", as_of),) if record_kind == "portfolio" else (
+            ("as_of", as_of), ("subject", symbol)
+        )
+        # v2 的 subject 同样必须等于记录键里的主体，否则"记录说的是门店 A、payload 说的是
+        # 门店 B"这种错配会静默通过，日后按 subject 聚合时才发现对不上。
+        for field, given in id_fields:
             if payload[field] != given:
                 raise ContractError(
                     field,

@@ -21,6 +21,7 @@ import re
 from datetime import date as _date
 from typing import Any, Mapping, Optional, Sequence
 
+from ..contracts.models import WEIGHT_SUM_TOLERANCE
 from .errors import SettlementRefused
 
 #: 市场后缀 → 基准。可配置（`LedgerStore(benchmark_map=...)`）。
@@ -291,4 +292,125 @@ def settlement_window(
         "benchmark_return": benchmark_return,
         "alpha": alpha,
         "aligned_points_available": available,
+    }
+
+
+def portfolio_settlement_window(
+    *,
+    entry_date: str,
+    legs: Mapping[str, tuple[Sequence[Any], Sequence[Any]]],
+    weights: Mapping[str, float],
+    benchmark_dates: Sequence[Any],
+    benchmark_values: Sequence[Any],
+    as_of: str,
+    holding_days: int = DEFAULT_HOLDING_DAYS,
+    benchmark_symbol: str,
+) -> dict:
+    """组合窗口：`Σ w_i · r_i` 与现金部分，日期轴取**全部标的与基准的交集**。
+
+    ## 为什么轴必须取交集，而不是每条腿各算各的
+
+    若各腿用各自的交易日轴，某只停牌股的出场日就会与其他腿不同——那样算出来的"组合收益"
+    是几段不同持有期收益的加权和，它在数学上不是一个组合在某一期的收益。故：轴 = 全部标的
+    日期 ∩ 基准日期，入场日必须落在轴上，出场日是轴上入场日的第 `holding_days` 个后继。
+
+    ## 拒绝语义（asm task 4.2：整期原子）
+
+    任一腿在轴上不足以覆盖持有期 → **整次拒绝**，并点名该腿与缺口交易日数。不接受"先用齐的
+    腿算个部分收益"——部分结算出的 alpha 与完整组合的 alpha 长得一样，而这个项目最贵的错
+    就是"两套口径长得一样"。
+    """
+    a = check_iso_date(as_of, name="as_of")
+    ed = check_iso_date(entry_date, name="entry_date")
+    hd = check_holding_days(holding_days)
+    if not isinstance(benchmark_symbol, str) or not benchmark_symbol.strip():
+        raise SettlementRefused("benchmark_symbol must be a non-empty string")
+    if not legs:
+        raise SettlementRefused("legs: at least one symbol series is required")
+
+    ben = build_series(benchmark_dates, benchmark_values, name="benchmark_prices")
+    _refuse_future(ben, name="benchmark_prices", as_of=a)
+    ben_map = dict(ben)
+
+    series_maps: dict[str, dict[str, Optional[float]]] = {}
+    for sym, (dates, values) in legs.items():
+        if not isinstance(sym, str) or not sym.strip():
+            raise SettlementRefused(f"legs: symbol keys must be non-empty strings (got {sym!r})")
+        s = build_series(dates, values, name=f"legs[{sym}]")
+        _refuse_future(s, name=f"legs[{sym}]", as_of=a)
+        series_maps[sym] = dict(s)
+
+    # 权重必须覆盖全部腿，且只覆盖它们：多一条腿或权重对不上都是输入错误，不静默补 0。
+    for sym in series_maps:
+        if sym not in weights:
+            raise SettlementRefused(
+                f"weights: missing weight for leg {sym!r}; refusing to assume 0 "
+                "(an unweighted leg means the recorded intent did not hold it)"
+            )
+    for sym in weights:
+        if sym not in series_maps:
+            raise SettlementRefused(
+                f"legs: missing price series for weighted symbol {sym!r}"
+            )
+
+    axis_sets = [set(ben_map)] + [set(m) for m in series_maps.values()]
+    axis = sorted(set.intersection(*axis_sets))
+    if ed not in axis:
+        raise SettlementRefused(
+            f"entry_date {ed} is not on the aligned trading axis (no price for every leg "
+            f"and the benchmark that day); refusing to slide the entry date"
+        )
+    idx = axis.index(ed)
+    if len(axis) - idx - 1 < hd:
+        raise SettlementRefused(
+            f"insufficient coverage: need {hd + 1} aligned points from {ed}, "
+            f"got {len(axis) - idx} (missing_trading_days={hd - (len(axis) - idx - 1)})"
+        )
+    exit_date = axis[idx + hd]
+
+    leg_returns: dict[str, float] = {}
+    for sym, m in series_maps.items():
+        entry_px, exit_px = m.get(ed), m.get(exit_date)
+        if entry_px is None or entry_px <= 0:
+            raise SettlementRefused(f"legs[{sym}]: entry price at {ed} is missing or non-positive")
+        if exit_px is None or exit_px <= 0:
+            raise SettlementRefused(
+                f"legs[{sym}]: exit price at {exit_date} is missing or non-positive"
+            )
+        leg_returns[sym] = exit_px / entry_px - 1.0
+
+    ben_entry, ben_exit = ben_map[ed], ben_map[exit_date]
+    if ben_entry is None or ben_entry <= 0 or ben_exit is None or ben_exit <= 0:
+        raise SettlementRefused(
+            f"benchmark_prices: endpoints at {ed} / {exit_date} must be positive"
+        )
+    benchmark_return = ben_exit / ben_entry - 1.0
+
+    invested = sum(float(w) for w in weights.values())
+    if invested > 1 + WEIGHT_SUM_TOLERANCE:
+        raise SettlementRefused(
+            f"weights: Σweights={invested} exceeds 1; rejected, not normalised"
+        )
+    # 12 位舍入：与权重分配同一把尺，避免 0.19999999999999996 这类尾巴进入报告。
+    invested = round(invested, 12)
+    cash_weight = round(max(0.0, 1.0 - invested), 12)
+    gross = sum(float(weights[sym]) * r for sym, r in leg_returns.items())
+
+    return {
+        "entry_date": ed,
+        "exit_date": exit_date,
+        "holding_days": hd,
+        "leg_returns": leg_returns,
+        "weights": {k: float(v) for k, v in weights.items()},
+        "invested_weight": invested,
+        # 现金部分收益记零并单独报出——不摊进标的收益（摊进去就等于给现金编了个收益）。
+        "cash_weight": cash_weight,
+        "cash_return": 0.0,
+        "raw_return": gross,
+        "benchmark_symbol": benchmark_symbol,
+        "benchmark_entry_price": ben_entry,
+        "benchmark_exit_price": ben_exit,
+        "benchmark_return": benchmark_return,
+        "alpha": gross - benchmark_return,
+        "aligned_points": len(axis),
     }

@@ -48,7 +48,9 @@ VARIANTS = ((400, 301), (120, 911), (700, 77))
 
 #: 快照型工具（输入是映射而非序列）只能用它自己声明的 SAMPLES，无法换种子。
 SNAPSHOT_FAMILIES = ("technical", "portfolio", "fundamental", "valuation",
-                     "regime", "factor", "validation")
+                     "regime", "factor", "validation",
+                     # 决策一致性族：两个快照型工具，SAMPLES 在各自族模块里。
+                     "consistency", "premise_watch")
 
 
 def _json_type(value: Any) -> str:
@@ -177,8 +179,10 @@ def _ledger_schemas() -> dict[str, dict]:
     import tempfile
 
     from fd_quant.ledger.tools import (
-        record_decision, retrieve_decisions, settle_decision, summarize_pack_performance,
+        list_pending_decisions, record_decision, retrieve_decisions, settle_decision,
+        settle_portfolio, summarize_pack_performance,
     )
+    from fd_quant.portfolio import build_intent
 
     rating = json.loads((REPO / "schemas" / "rating.schema.json").read_text(encoding="utf-8"))
     tw = json.loads((REPO / "schemas" / "target-weights.schema.json").read_text(encoding="utf-8"))
@@ -198,6 +202,21 @@ def _ledger_schemas() -> dict[str, dict]:
     settle_decision(decision_id=did, symbol_dates=dates, symbol_prices=[100.0 + i for i in range(10)],
                     benchmark_dates=dates, benchmark_prices=[100.0] * 10,
                     as_of="2025-01-20", db_path=db)
+    # 组合记录：形状与单体不同（无 symbol、有 portfolio_key），结算返回体也是另一套字段。
+    intent = build_intent(
+        [{"as_of": "2025-01-02", "subject": "600519.SS", "side": "buy", "conviction": 0.8}],
+        {"kind": "equal_weight", "cash_floor": 0.2}, as_of="2025-01-02",
+        producer={"pack": "p", "skill": "s"},
+    )
+    prec = record_decision(as_of="2025-01-02", portfolio_key="p-1", pack="p", skill="s",
+                           payload=intent, record_kind="portfolio", db_path=db)
+    psettle = settle_portfolio(
+        decision_id=prec["result"]["decision_id"],
+        legs={"600519.SS": [dates, [100.0 + i for i in range(10)]]},
+        benchmark_dates=dates, benchmark_prices=[100.0] * 10,
+        benchmark_symbol="000300.SS", as_of="2025-01-20", db_path=db,
+    )
+    pending = list_pending_decisions(as_of="2025-03-01", db_path=db)
     ret = retrieve_decisions(symbol="600519.SS", as_of="2025-03-01", db_path=db)
     stats = summarize_pack_performance(as_of="2025-03-01", db_path=db)
 
@@ -221,6 +240,8 @@ def _ledger_schemas() -> dict[str, dict]:
                 "same_symbol": _array_of_item(ret["result"]["same_symbol"], tw, rating),
                 "cross_symbol": _array_of_item(ret["result"]["cross_symbol"], tw, rating),
             })}),
+        "list_pending_decisions": _schema_from([pending]),
+        "settle_portfolio": _schema_from([psettle]),
         "summarize_pack_performance": _schema_from([stats]),
     }
 
@@ -251,8 +272,70 @@ def _settle_result(db: str) -> dict:
     from fd_quant.ledger.store import LedgerStore
 
     store = LedgerStore(db)
-    rows = store.retrieve(symbol="600519.SS", as_of="2025-03-01", n_same=1, m_cross=0)
+    # caller 是 retrieve() 的必填关键字（账本按调用者隔离，add-portfolio-intent-contract
+    # 之前的那次 caller 迁移就该同步这里；不传会 TypeError，生成器永远跑不起来）。
+    rows = store.retrieve(caller="generator", symbol="600519.SS", as_of="2025-03-01",
+                          n_same=1, m_cross=0)
     return rows["same_symbol"][0]["settlement"] if rows["same_symbol"] else {}
+
+
+def _portfolio_schemas() -> dict[str, dict]:
+    """组合构建族：三件纯确定性工具的返回体，实测归纳。
+
+    与账本族同理，`intent` / `target_weights` 两个键引用既有契约 schema 真源，
+    其余键由实际返回归纳——不手写，避免"声明与运行时两套形状"。
+    """
+    from fd_quant.portfolio import (
+        build_portfolio_intent, to_target_weights, validate_portfolio_intent_tool,
+    )
+
+    rating_like = {
+        "as_of": "2025-01-02", "subject": "600519.SS", "side": "buy", "conviction": 0.8,
+        "price_target": 1800.0,
+    }
+    built = build_portfolio_intent([rating_like], {"kind": "equal_weight", "cash_floor": 0.2},
+                                   "2025-01-02")
+    validated = validate_portfolio_intent_tool(built["intent"])
+    exported = to_target_weights(built["intent"])
+
+    intent_schema = json.loads((REPO / "schemas" / "portfolio-intent.schema.json")
+                              .read_text(encoding="utf-8"))
+    tw_schema = json.loads((REPO / "schemas" / "target-weights.schema.json")
+                           .read_text(encoding="utf-8"))
+    def _with_contract(obs: dict, key: str, contract: dict) -> dict:
+        """返回体里某个键用契约 schema 真源替换归纳结果。
+
+        归纳只能看出"这是个 object"，看不出它必须满足 Rating/TargetWeights 的
+        不变式；引用真源让下游按契约校验，而不是按一份形状近似的声明。
+        """
+        schema = _schema_from([obs])
+        schema["properties"][key] = contract
+        return schema
+
+    return {
+        "build_portfolio_intent": _with_contract(built, "intent", intent_schema),
+        "validate_portfolio_intent": _schema_from([validated]),
+        "to_target_weights": _with_contract(exported, "target_weights", tw_schema),
+    }
+
+
+def _risk_schemas() -> dict[str, dict]:
+    """组合风控族：判定返回体（三态 + 触达项 + 不可判定项），实测归纳。"""
+    from fd_quant.risk import evaluate_portfolio_gate
+
+    good = {"per_symbol_max": 0.3, "industry_max": 0.5, "drawdown_max": 0.15,
+            "daily_loss_max": 0.05}
+    # 两次样本：一次 ok（含不可判定项）、一次 breached（含触达项），让 key 集合与
+    # 可空性都被实测覆盖——只喂通过样本会让 items 看起来恒为空。
+    ok = evaluate_portfolio_gate(
+        weights={"A": 0.2}, thresholds=good, sectors={"A": "tech"},
+        equity_series=[("2026-06-01", 100.0), ("2026-06-02", 101.0)],
+    )
+    breached = evaluate_portfolio_gate(
+        weights={"A": 0.45}, thresholds=good, as_of="2026-07-20",
+        price_as_of_max="2026-07-10",
+    )
+    return {"evaluate_portfolio_gate": _schema_from([ok, breached])}
 
 
 def build() -> dict:
@@ -267,6 +350,8 @@ def build() -> dict:
             continue
         tools[spec.name] = _schema_from(obs)
     tools.update(_ledger_schemas())
+    tools.update(_portfolio_schemas())
+    tools.update(_risk_schemas())
     return {
         "schema": "fd-quant-output-schemas/v1",
         "note": ("由 scripts/gen_output_schemas.py 从运行时实测生成。"

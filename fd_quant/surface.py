@@ -22,12 +22,20 @@ from .compute import (
     missing_families as compute_missing_families,
 )
 from .ledger import TOOLS as LEDGER_TOOLS
+from .portfolio import PORTFOLIO_TOOLS
+from .risk_tools import RISK_TOOLS
 
 #: 账本族的暴露级别（`ToolSpec.effective_level` 缺省即 "commercial"，
 #: 这里显式登记，使"账本面是否可被 pack 引用"是一个可见的决定而不是默认值）。
 #: commercial 的理由：P5 决策复盘 pack 与 P4 投委会是既定消费方（proposal.md 的
 #: 契约下游），它们要引用这四个工具做落账 / 结算 / 点内检索 / 聚合。
-EXTRA_GROUP_LEVELS: dict[str, str] = {"decision_ledger": "commercial"}
+EXTRA_GROUP_LEVELS: dict[str, str] = {
+    "decision_ledger": "commercial",
+    # 组合构建：纯确定性函数（不取数、不联网、不落库），与计算面同级可对外。
+    "portfolio_construction": "commercial",
+    # 组合风控闸：纯函数、只读幂等，与组合构建同级。
+    "portfolio_risk": "commercial",
+}
 
 #: 全量分组的暴露级别：计算面七族（来自 compute 层）+ 账本族（本层登记）。
 SURFACE_GROUP_LEVELS: dict[str, str] = {**GROUP_LEVELS, **EXTRA_GROUP_LEVELS}
@@ -41,7 +49,7 @@ def all_surface_tools() -> list[ToolSpec]:
     """
     out: list[ToolSpec] = list(compute_tools())
     seen = {spec.name for spec in out}
-    for spec in LEDGER_TOOLS:
+    for spec in LEDGER_TOOLS + PORTFOLIO_TOOLS + RISK_TOOLS:
         if spec.name in seen:
             raise RuntimeError(f"duplicate tool name across groups: {spec.name}")
         seen.add(spec.name)
