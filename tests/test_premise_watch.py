@@ -193,3 +193,59 @@ def test_premise_invalidated_without_fingerprint_refused():
             threshold=1, evaluated_at="2026-11-10", series_fingerprint="")
 
     assert "指纹" in str(exc.value), "没有指纹的失效判定无法复核，必须拒绝"
+
+
+# --- 3.5 不自动改判：判定路径不得改动输入 -------------------------------
+
+def test_classification_does_not_mutate_inputs():
+    """分拣是只读的：喂进去的前提对象在调用后必须逐字段不变。
+
+    "前提失效只报信号、不自动改判"这条纪律的代码面底线就是：判定路径连输入都
+    不改，更不可能回头去改决策记录。
+    """
+    import copy
+
+    items = [{"claim": "c", "metric_ref": "m", "comparator": "gte",
+              "threshold": 1, "as_of": "2026-11-10"},
+             {"claim": "bad", "metric_ref": None, "comparator": "gte",
+              "threshold": 1, "as_of": "2026-11-10"}]
+    before = copy.deepcopy(items)
+
+    classify_preconditions(items, as_of="2026-11-10",
+                           time_horizon=["2026-11-10", "2027-01-01"])
+
+    assert items == before, "分拣不得改动入参（否自动改判就无从保证）"
+
+
+def test_mapping_layer_does_not_mutate_monitorable_items():
+    """映射到告警规则同样只读。"""
+    import copy
+
+    item = {"index": 0, "metric_ref": "m", "comparator": "gte",
+            "threshold": 0.4, "as_of": "2026-11-10", "window": ["a", "b"]}
+    before = copy.deepcopy(item)
+
+    classify_preconditions([item], as_of="2026-11-10",
+                           time_horizon=["2026-11-10", "2027-01-01"])
+
+    assert item == before
+
+
+# --- 3.7 抖动收敛：阈值与冷却一起进规则，去重交给既有状态机 -------------
+
+def test_threshold_and_cooldown_are_both_carried_into_the_rule():
+    """抖动不刷屏靠两件东西：阈值（判据）+ 冷却（通知节流）。
+
+    本层不自己实现去重——去重属于告警状态机的职责，重复实现会造出第二套
+    语义。这里只保证两件东西都被带进 spec。
+    """
+    out = classify_preconditions(
+        [{"claim": "c", "metric_ref": "m", "comparator": "gte",
+          "threshold": 0.4, "as_of": "2026-11-10"}],
+        as_of="2026-11-10", time_horizon=["2026-11-10", "2027-01-01"])
+
+    item = out["monitorable"][0]
+    assert item["threshold"] == 0.4
+    assert item["comparator"] == "gte"
+    # 冷却由告警侧 spec 承载（premise_rules 透传 cooldownMinutes），本层不臆造
+    assert "cooldown" not in item
