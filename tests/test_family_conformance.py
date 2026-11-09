@@ -36,7 +36,10 @@ IDS = [f"{t.group}:{t.name}" for t in ALL]
 # 没声明就红（不静默跳过，也不让调用处抛 TypeError）。
 
 _FAMILY_MODULES = ("technical", "portfolio", "fundamental", "valuation",
-                   "regime", "factor", "validation")
+                   "regime", "factor", "validation",
+                   # 决策一致性族（add-decision-consistency-and-premise-watch）：
+                   # 两个快照型工具，SAMPLES 各自声明在族模块里。
+                   "consistency", "premise_watch")
 
 #: 形如 Mapping[...] / dict[str, ...] / Dict[...] 的注解 → 该工具吃快照映射输入。
 _MAPPING_HINTS = ("Mapping", "MutableMapping", "dict", "Dict")
@@ -338,9 +341,10 @@ def test_determinism_survives_thread_env_change():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
-    code = script.format(root=str(root), tests=str(root / "tests"),
-                      mods=("technical", "portfolio", "fundamental", "valuation",
-                            "regime", "factor", "validation"))
+    # 族清单只保留一份（`_FAMILY_MODULES`）。此前这里另抄了一份字面量，新增族时
+    # 忘了同步就会以"detect_conflicts() got an unexpected keyword argument 'dates'"
+    # 的形式炸出来——症状离原因很远。
+    code = script.format(root=str(root), tests=str(root / "tests"), mods=_FAMILY_MODULES)
 
     digs = []
     for threads in ("1", "4"):

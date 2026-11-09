@@ -32,6 +32,7 @@ GROUP_LEVELS: dict[str, str] = {
     "regime_detection": "commercial",
     "factor_statistics": "commercial",
     "validation": "commercial",
+    "decision_consistency": "commercial",
 }
 
 
@@ -78,6 +79,12 @@ _MODULES = (
     ".regime",
     ".factor",
     ".validation",
+    # 决策一致性族（add-decision-consistency-and-premise-watch）：两个纯计算工具，
+    # 只对传入的决策记录/前提作答，不取数、不读账本。独立成族而不塞进 validation：
+    # validation 管"输入序列的口径"，这一族管"多个结论之间是否自相矛盾、前提是否
+    # 还可监控"——判据不同，混在一组会让族描述失真。
+    ".consistency",
+    ".premise_watch",
 )
 
 #: 允许缺失的族（并行开发期：模块尚未落地时注册中心仍可 import）。
