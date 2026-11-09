@@ -163,3 +163,68 @@ def test_recorded_ref_is_readable_back(store):
     got = store.get(did)
     assert got["series_ref"]["source_id"] == "astock_daily"
     assert len(got["series_ref"]["fingerprint"]) == 64
+
+
+# ------------------- 迁移链的缺口：decision_v2 重建表不得丢 series_ref
+
+
+def test_decision_v2_migration_preserves_series_ref(tmp_path):
+    """两条迁移链叠在同一个 `_init_schema` 上时，重建表必须搬走 `series_ref`。
+
+    **这是实测发现的真缺口**：`series_ref` 由本 change（4.5）引入，
+    `_migrate_to_decision_v2` 由另一条线引入；它重建 decisions 表时若不在 INSERT 里
+    列出该列，已落过 ref 的行会**静默变 NULL**——两条迁移各自都"没错"，叠起来丢数据。
+
+    所以这里不测"迁移跑得通"，测"迁移不丢数据"：先造一行带 ref，重建后必须还在。
+    """
+    import sqlite3
+
+    from fd_quant.ledger.store import _migrate_to_decision_v2
+
+    con = sqlite3.connect(tmp_path / "legacy.db")
+    con.executescript("""
+    CREATE TABLE decisions (
+      decision_id TEXT PRIMARY KEY, caller TEXT NOT NULL DEFAULT 'anonymous',
+      record_kind TEXT NOT NULL DEFAULT 'single', as_of TEXT NOT NULL, symbol TEXT,
+      portfolio_key TEXT, pack TEXT NOT NULL, skill TEXT NOT NULL, payload TEXT NOT NULL,
+      target_weights TEXT, series_ref TEXT, evidence TEXT NOT NULL, status TEXT NOT NULL,
+      revises TEXT, revision_seq INTEGER NOT NULL, created_at TEXT NOT NULL
+    );
+    INSERT INTO decisions VALUES ('d1','c1','single','2026-06-30','600519',NULL,'p','k',
+      '{}','[]','{"source_id":"astock_daily","fingerprint":"x"}','[]','pending',NULL,0,'now');
+    """)
+    con.commit()
+    _migrate_to_decision_v2(con)
+    kept = con.execute("SELECT series_ref FROM decisions").fetchone()[0]
+    con.close()
+    assert kept is not None, "decision_v2 重建表丢了 series_ref（静默变 NULL）"
+    assert "astock_daily" in kept
+
+
+def test_full_init_preserves_series_ref_end_to_end(tmp_path):
+    """整条 `_init_schema`（含全部迁移）跑在带 ref 的库上，ref 仍在。"""
+    import sqlite3
+
+    db = tmp_path / "e2e.db"
+    con = sqlite3.connect(db)
+    con.executescript("""
+    CREATE TABLE decisions (
+      decision_id TEXT PRIMARY KEY, caller TEXT NOT NULL DEFAULT 'anonymous',
+      record_kind TEXT NOT NULL DEFAULT 'single', as_of TEXT NOT NULL, symbol TEXT,
+      portfolio_key TEXT, pack TEXT NOT NULL, skill TEXT NOT NULL, payload TEXT NOT NULL,
+      target_weights TEXT, series_ref TEXT, evidence TEXT NOT NULL, status TEXT NOT NULL,
+      revises TEXT, revision_seq INTEGER NOT NULL, created_at TEXT NOT NULL
+    );
+    INSERT INTO decisions VALUES ('d1','c1','single','2026-06-30','600519',NULL,'p','k',
+      '{}','[]','{"source_id":"astock_daily"}','[]','pending',NULL,0,'now');
+    """)
+    con.commit()
+    con.close()
+
+    LedgerStore(db)  # 触发完整 _init_schema（全部迁移）
+    con = sqlite3.connect(db)
+    kept = con.execute("SELECT series_ref FROM decisions").fetchone()[0]
+    n = con.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+    con.close()
+    assert n == 1
+    assert kept is not None and "astock_daily" in kept

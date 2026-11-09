@@ -460,12 +460,15 @@ def _migrate_to_decision_v2(con: sqlite3.Connection) -> None:
             if "CREATE TABLE IF NOT EXISTS decisions" in stmt or " ON decisions" in stmt:
                 con.execute(stmt)
         con.execute(
+            # series_ref 由 add-price-supply-and-caliber 4.5 引入；本迁移重建表时若不搬它，
+            # 已落过 ref 的行会静默变 NULL（实测复现过）。两条迁移链叠在同一条 _init_schema 上，
+            # 谁都没错，但缺口会丢数据——所以这里必须显式列出。
             "INSERT INTO decisions (decision_id, caller, record_kind, as_of, symbol,"
-            " portfolio_key, pack, skill, payload, target_weights, evidence, status,"
-            " revises, revision_seq, created_at, subject_kind, subject_key, action,"
+            " portfolio_key, pack, skill, payload, target_weights, series_ref, evidence,"
+            " status, revises, revision_seq, created_at, subject_kind, subject_key, action,"
             " preconditions, settlement_spec)"
             " SELECT decision_id, caller, record_kind, as_of, symbol, portfolio_key,"
-            " pack, skill, payload, target_weights, evidence, status, revises,"
+            " pack, skill, payload, target_weights, series_ref, evidence, status, revises,"
             " revision_seq, created_at, NULL, NULL, NULL, NULL, NULL"
             " FROM decisions_old_v2"
         )
