@@ -410,3 +410,47 @@ def test_from_dict_refuses_invalid():
 
 def test_selected_sides_are_buy_and_strong_buy():
     assert SELECTED_SIDES == ("strong_buy", "buy")
+
+
+# ------------------------------------- 参考价带出处（task 5.4，契约层）
+
+REF = {
+    "schema_version": "1", "source_id": "astock_daily", "symbol": "600519",
+    "adjustment": "qfq", "adjustment_anchor": "2026-07-10",
+    "as_of_max": "2026-06-30", "window_start": "2026-01-01",
+    "window_end": "2026-06-30", "row_count": 120, "fingerprint": "b" * 64,
+}
+UPSIDE = {"kind": "target_upside_weighted", "cash_floor": 0.1, "conviction_floor": 0.3}
+
+
+def test_price_reference_may_carry_a_series_ref():
+    """契约层必须认这种形态——否则别处送来的 intent 会被判非法。"""
+    errs = check_portfolio_intent(_valid(rules={
+        **UPSIDE, "price_reference": {"600519": {"price": 1500.0, "series_ref": REF}},
+    }))
+    assert errs == []
+
+
+def test_an_invalid_series_ref_inside_price_reference_is_rejected():
+    bad = {k: v for k, v in REF.items() if k != "fingerprint"}
+    errs = check_portfolio_intent(_valid(rules={
+        **UPSIDE,
+        "price_reference": {"600519": {"price": 1500.0, "series_ref": bad}},
+    }))
+    assert any(e["path"].startswith("rules.price_reference.600519.series_ref")
+               for e in errs), errs
+
+
+def test_an_entry_without_a_price_is_rejected():
+    errs = check_portfolio_intent(_valid(rules={
+        **UPSIDE, "price_reference": {"600519": {"series_ref": REF}},
+    }))
+    assert any(e["path"] == "rules.price_reference.600519.price" for e in errs), errs
+
+
+def test_unknown_fields_inside_a_reference_entry_are_rejected():
+    errs = check_portfolio_intent(_valid(rules={
+        **UPSIDE,
+        "price_reference": {"600519": {"price": 1500.0, "series_ref": REF, "note": "x"}},
+    }))
+    assert any(e["path"].endswith(".note") for e in errs), errs
