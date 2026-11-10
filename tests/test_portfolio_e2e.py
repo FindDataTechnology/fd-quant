@@ -233,3 +233,33 @@ def test_a_ref_without_a_price_is_refused_not_treated_as_a_gap():
         _intent(kind="target_upside_weighted", cash=0.1, conviction_floor=0.3,
                 price_reference={"600519": {"series_ref": REF_OK},
                                  "000001": 10.0})
+
+
+# ------------------------- 带出处的参考价不影响两条消费路径（task 5.4 的回归）
+
+def test_export_to_target_weights_ignores_the_ref_and_keeps_weights():
+    """执行侧零改动：`TargetWeights` 不认识 rules，导出必须逐位不变。
+
+    这是我改 rules 形态时最容易顺手破坏的地方——如果哪天有人把 rules 塞进
+    TargetWeights，这条会红。
+    """
+    intent = _intent(kind="target_upside_weighted", cash=0.1, conviction_floor=0.3,
+                     price_reference={"600519": {"price": 1500.0, "series_ref": REF_OK},
+                                      "000001": 10.0})
+    tw = intent.to_target_weights()
+    assert validate_target_weights(tw)["valid"] is True
+    assert tw.weights == intent.weights == {"600519": 0.45, "000001": 0.45}
+
+
+def test_the_ref_survives_the_ledger_verbatim(store):
+    """落账→读回：嵌套出处逐字段不变。账本回答"这个参考价是哪来的"靠的就是它。"""
+    intent = _intent(kind="target_upside_weighted", cash=0.1, conviction_floor=0.3,
+                     price_reference={"600519": {"price": 1500.0, "series_ref": REF_OK},
+                                      "000001": 10.0})
+    store.record(caller="c1", as_of="2026-06-30", portfolio_key="k-ref",
+                 pack=PRODUCER["pack"], skill=PRODUCER["skill"],
+                 payload=intent, record_kind="portfolio")
+    item = store.list_pending(caller="c1", today="2026-12-31")["items"][0]
+    got = item["payload"]["rules"]["price_reference"]["600519"]
+    assert got["price"] == 1500.0
+    assert got["series_ref"] == REF_OK
