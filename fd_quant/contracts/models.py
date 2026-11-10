@@ -811,11 +811,32 @@ def _check_rules(rules: Any) -> list[dict]:
             })
         else:
             for sym, v in pr.items():
-                if not isinstance(v, (int, float)) or isinstance(v, bool) or float(v) <= 0:
+                # 两种形态（task 5.4）：裸正数，或 {"price": 正数, "series_ref": {...}}。
+                # 后者让参考价带上出处（哪一路、哪天的水位），rules 会被逐字快照进
+                # intent，所以不需要新字段就能事后回答"这个参考价是哪来的"。
+                price, ref = (v.get("price"), v.get("series_ref")) \
+                    if isinstance(v, Mapping) else (v, None)
+                if ref is not None:
+                    # 带了出处就必须合法：形状不对一律拒，不静默只认价格。
+                    for e in check_price_series_ref(ref):
+                        errs.append({
+                            "path": f"rules.price_reference.{sym}.series_ref.{e.get('path', '?')}",
+                            "reason": e.get("reason", "invalid series_ref"),
+                        })
+                if not isinstance(price, (int, float)) or isinstance(price, bool) \
+                        or float(price) <= 0:
                     errs.append({
-                        "path": f"rules.price_reference.{sym}",
+                        "path": f"rules.price_reference.{sym}"
+                                + (".price" if isinstance(v, Mapping) else ""),
                         "reason": "must be a positive number",
                     })
+                if isinstance(v, Mapping):
+                    for extra in v:
+                        if extra not in ("price", "series_ref"):
+                            errs.append({
+                                "path": f"rules.price_reference.{sym}.{extra}",
+                                "reason": "unknown field",
+                            })
         asof = rules.get("price_reference_as_of")
         if asof is not None and not _is_iso_date(asof):
             errs.append({

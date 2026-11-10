@@ -96,11 +96,37 @@ def _validate_rules(rules: Mapping[str, Any]) -> None:
             )
 
 
+def _reference_price(value: Any) -> Optional[float]:
+    """从参考价条目里取出价格。
+
+    两种形态都收（change2 task 5.4）：
+    - 裸数字：``{"600519": 1500.0}`` —— 老写法，继续支持，零破坏；
+    - 带出处的条目：``{"600519": {"price": 1500.0, "series_ref": {...}}}`` ——
+      参考价来自哪一路、哪天的水位，随 intent 一起落账（``rules`` 是逐字快照的）。
+
+    带出处时**只认合法的 ref**：形状不对就拒绝，不静默退回"只有价格"——
+    否则"我带了出处"与"我以为我带了出处"在报告上看不出区别。
+    """
+    if isinstance(value, Mapping):
+        ref = value.get("series_ref")
+        if ref is not None:
+            from .contracts.models import check_price_series_ref
+
+            errs = check_price_series_ref(ref)
+            if errs:
+                raise IntentBuildError(
+                    f"rules.price_reference.series_ref.{errs[0].get('path', '?')}",
+                    f"invalid series_ref: {errs[0].get('reason', '')}",
+                )
+        return value.get("price")
+    return value
+
+
 def _upside(price_target: Any, reference: Any) -> Optional[float]:
     if price_target is None or reference is None:
         return None
     try:
-        pt, ref = float(price_target), float(reference)
+        pt, ref = float(price_target), float(_reference_price(reference))
     except (TypeError, ValueError):
         return None
     if ref <= 0:
@@ -214,7 +240,7 @@ def build_intent(
 
         upside = None
         if kind == "target_upside_weighted":
-            ref = price_reference.get(subject)
+            ref = _reference_price(price_reference.get(subject))
             if ref is None:
                 # 参考价缺失是**环境**问题，不是这条评级的问题：整条规则拒绝，
                 # 不退回等权（静默换规则＝换了策略而报告上看不出来）。

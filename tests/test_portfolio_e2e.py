@@ -177,3 +177,59 @@ def test_portfolio_intent_survives_the_roundtrip_and_stays_valid(store):
     got = store.get(rec["decision_id"])["payload"]
     assert PortfolioIntent.from_dict(got).to_dict() == intent.to_dict()
     assert validate_portfolio_intent(got)["valid"] is True
+
+
+# --------------------------------------------------- 参考价带出处（task 5.4）
+
+REF_OK = {
+    "schema_version": "1", "source_id": "astock_daily", "symbol": "600519",
+    "adjustment": "qfq", "adjustment_anchor": "2026-07-10",
+    "as_of_max": "2026-06-30", "window_start": "2026-01-01",
+    "window_end": "2026-06-30", "row_count": 120,
+    "fingerprint": "a" * 64,
+}
+
+
+def test_reference_price_may_carry_its_series_ref():
+    """参考价可以带出处：`{price, series_ref}`。
+
+    出处随 `rules` 逐字进 intent，所以第三方能回答"这个参考价是哪一路、哪天的水位"——
+    这正是 task 5.4 要的那半件事（4.1 落地后不再需要占位）。
+    """
+    intent = _intent(
+        kind="target_upside_weighted", cash=0.1, conviction_floor=0.3,
+        price_reference={
+            "600519": {"price": 1500.0, "series_ref": REF_OK},
+            "000001": 10.0,          # 老写法并存：不带出处也照旧工作
+        },
+        price_reference_as_of="2026-06-30",
+    )
+    # 与只给裸数字时权重逐位一致——带出处不改变算式
+    assert intent.weights == {"600519": 0.45, "000001": 0.45}
+    assert intent.rules["price_reference"]["600519"]["series_ref"]["source_id"] == "astock_daily"
+
+
+def test_a_ref_with_the_wrong_shape_is_refused_not_ignored():
+    """带了出处但不合法 → 拒绝。静默退回"只有价格"会让报告看不出差别。"""
+    from fd_quant.portfolio import IntentBuildError
+
+    bad = dict(REF_OK)
+    bad.pop("fingerprint")
+    with pytest.raises(IntentBuildError, match="series_ref"):
+        _intent(kind="target_upside_weighted", cash=0.1, conviction_floor=0.3,
+                price_reference={"600519": {"price": 1500.0, "series_ref": bad},
+                                 "000001": 10.0})
+
+
+def test_a_ref_without_a_price_is_refused_not_treated_as_a_gap():
+    """有出处没价格 = 参考价条目坏了，不是"行情缺口"。
+
+    两者处置不同：缺口可以在下一轮补上（本轮排除该标的），条目坏则说明上游
+    拼错了对象——静默降级成 data_gap 会让"谁把条目写错了"永远查不出来。
+    """
+    from fd_quant.portfolio import IntentBuildError
+
+    with pytest.raises(IntentBuildError, match="price_reference"):
+        _intent(kind="target_upside_weighted", cash=0.1, conviction_floor=0.3,
+                price_reference={"600519": {"series_ref": REF_OK},
+                                 "000001": 10.0})
