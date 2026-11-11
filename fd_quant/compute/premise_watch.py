@@ -45,7 +45,11 @@ def classify_preconditions(
     preconditions: Optional[Sequence[Mapping[str, Any]]],
     *,
     as_of: str,
-    time_horizon: Optional[str] = None,
+    #: 二元区间 `[start, end]`。**不是**字符串：契约里的 `time_horizon` 是字符串
+    #: （`Rating`/`Decision` 都要求 string|null），但那个字符串无法表达窗口边界，
+    #: 本工具要的是显式区间。标注曾写成 `Optional[str]`，于是工具面告诉 agent
+    #: "传字符串"，而实现只认列表——每条前提都会被判 `window_undetermined`。
+    time_horizon: Optional[Sequence[str]] = None,
     decision_as_of: Optional[str] = None,
     resolvable_metrics: Optional[Sequence[str]] = None,
 ) -> dict:
@@ -56,8 +60,10 @@ def classify_preconditions(
         `{claim, metric_ref, comparator, threshold, as_of}`。
       as_of —— 口径日（必填）。晚于该日的前提**拒绝计算并点名**（计算面纪律：
         不得用晚于口径日的信息判定当时的可监控性）。
-      time_horizon / decision_as_of —— 用于推导观察窗；两者皆缺则判
+      time_horizon —— 观察窗的**唯一**来源：须为显式区间 `[start, end]`；否则判
         `window_undetermined`（**不**默认取无限窗：那会让规则永不触发却看起来在监控）。
+      decision_as_of —— **保留但不参与窗口推导**（历史参数，曾出现在错误文案里，
+        见 `_derive_window` 的说明）。传它不会让前提变可监控。
       resolvable_metrics —— 可选；给出即对 `metric_ref` 做白名单校验，
         不在其中判 `metric_not_resolvable`。不给则只做非空校验
         （可解析性由调用方在创建规则时再核）。
@@ -136,11 +142,11 @@ def classify_preconditions(
             })
             continue
 
-        window = _derive_window(as_of.strip(), decision_as_of, time_horizon)
+        window = _derive_window(time_horizon)
         if window is None:
             unmonitorable.append({
                 "index": idx, "reason": REASON_NO_WINDOW,
-                "detail": ("观察窗无法确定：既无 time_horizon 也无 decision_as_of；"
+                "detail": ("观察窗无法确定：time_horizon 未给出显式区间 [start, end]；"
                            "不默认取无限窗（那会让规则永不触发却看起来在监控）"),
                 "raw": dict(raw),
             })
@@ -178,13 +184,16 @@ def classify_preconditions(
     )
 
 
-def _derive_window(
-    premise_as_of: str, decision_as_of: Optional[str], time_horizon: Optional[str],
-) -> Optional[list[str]]:
+def _derive_window(time_horizon: Optional[Sequence[str]]) -> Optional[list[str]]:
     """推导观察窗 ``[start, end]``。
 
-    起点取前提的口径日（前提说的是"当时我对这个指标的判断"），终点优先用
-    `time_horizon` 的显式区间形式 ``[start, end]``；否则无法推导 → None。
+    **唯一**来源是 `time_horizon` 的显式区间形式 ``[start, end]``（且 start <= end）；
+    其余一律返回 None。
+
+    刻意不再接受 `premise_as_of` / `decision_as_of`：本函数曾带着这两个参数却从不
+    读取，而 docstring 写着"起点取前提的口径日"、错误文案写着"既无 time_horizon
+    也无 decision_as_of"——照着文档传 `decision_as_of` 的人会拿到
+    `window_undetermined`，进而误判"前提不可监控"。参数删掉比留在签名里撒谎好。
     """
     if isinstance(time_horizon, (list, tuple)) and len(time_horizon) == 2:
         start, end = str(time_horizon[0]), str(time_horizon[1])
