@@ -27,7 +27,7 @@
 """
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 #: 封闭集合。新增码必须在这里登记——`test_error_codes.py` 会比对
 #: 各服务实际使用的码集合与它，出现未登记的码即失败。
@@ -108,11 +108,10 @@ def error_result(
     )
 
 
-def degraded_note(reason: str, **extra: Any) -> dict[str, Any]:
-    """成功响应里的降级标记：区分"真的没有"与"取不到"。"""
-    return {"degraded": True, "degraded_reason": reason, **extra}
+#: 「降级返回」只有**一种**形状，而且它不在本模块里造：
+#: 计算面工具把算不出的那一项写成 `null` 并附 `reason`（缺什么、缺多少），
+#: 由调用方据 `reason` 决定怎么讲。**不要**新增一个 `degraded: true` 之类的旁路标记——
+#: 两套形状并存时，"真的没有"与"取不到"又会被折叠回一个。
+#: （2026-11-11 删掉了旧的 `degraded_note` 助手：它零引用，却把这个旁路形状
+#: 写成了"约定"，谁先读到它谁就照着造出第二套。）
 
-
-def codes_used_in(module_globals: Iterable[Any]) -> set[str]:
-    """测试辅助：从模块里收集实际用到的码（用于封闭性核对）。"""
-    return {v for v in module_globals if isinstance(v, str) and v in CODES}

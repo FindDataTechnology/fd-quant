@@ -13,7 +13,7 @@ SQLite（spec: 存储原子性与并发安全），所以它物理上不住在 `
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any
 
 from .compute import (
     GROUP_LEVELS,
@@ -69,18 +69,7 @@ def missing_families() -> list[str]:
     return compute_missing_families()
 
 
-def group_level(group: str) -> str:
-    """分组的暴露级别（未登记的分组按 commercial，与 ToolSpec.effective_level 一致）。"""
-    return SURFACE_GROUP_LEVELS.get(group, "commercial")
-
-
-def ledger_group_present() -> bool:
-    """账本族是否在工具面上（上牌自检的反向探针：缺失即应报错）。"""
-    return any(spec.group == "decision_ledger" for spec in all_surface_tools())
-
-
-def find_tool(name: str) -> Optional[ToolSpec]:
-    for spec in all_surface_tools():
-        if spec.name == name:
-            return spec
-    return None
+# 2026-11-11 删掉三个零引用的助手（`group_level` / `ledger_group_present` / `find_tool`）：
+# 前两个分别与 `ToolSpec.effective_level`、`scripts/selfcheck_surface.py` 里的反向上牌自检
+# 重复实现同一件事；`find_tool` 是没人调的线性查找。留着它们的代价不是几行代码，而是
+# 下一个读者会从两份实现里挑一份——然后另一份就悄悄漂移了。

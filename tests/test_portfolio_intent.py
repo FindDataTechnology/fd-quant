@@ -220,12 +220,18 @@ def test_empty_weights_with_all_excluded_is_legal():
 
 
 def test_build_is_deterministic_including_rationale():
+    from fd_quant.compute.base import check_determinism
+
     ratings = [_rating(), _rating("000001", "strong_buy", 0.6, 12.0)]
     rules = {"kind": "conviction_weighted", "cash_floor": 0.2, "conviction_floor": 0.3}
-    a = build_intent(ratings, rules, as_of="2026-06-30")
-    b = build_intent(ratings, rules, as_of="2026-06-30")
-    assert a.to_json() == b.to_json()
-    assert a.rationale == b.rationale
+    # 逐位一致交给计算面那把尺（两次调用 + `assert_bitequal`），**不再手写一份**：
+    # 手写比较是第二份判据，两份迟早会漂（一份改成比长度、另一份没改）。
+    # 此前 `check_determinism` 零引用——判据写得再对，没人调等于没挂上。
+    check_determinism(lambda: build_intent(ratings, rules, as_of="2026-06-30").to_dict())
+    # rationale 单独钉一次：它在 to_dict 里已被逐位比过，但失败时那句"逐位不同"不会
+    # 告诉后来人问题出在**文本**上（文本漂移比数值漂移更难发现，因为它不影响任何数字）。
+    assert (build_intent(ratings, rules, as_of="2026-06-30").rationale
+            == build_intent(ratings, rules, as_of="2026-06-30").rationale)
 
 
 def test_build_does_no_io(monkeypatch):
