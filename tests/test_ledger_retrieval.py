@@ -404,6 +404,10 @@ def test_the_only_reflection_output_path_is_retrieval(store):
         # 不含反思文本——它是另一条审计线，不与决策反思混在一起。
         "record_risk_thresholds",
         "latest_risk_thresholds",
+        # 出处解析（portfolio-intent-contract 第 3 条）：只回答"这些 id 里哪些在**本人**
+        # 账本里存在"，返回 `set[str]`，既不回 payload 也不回反思文本——因此不是
+        # 反思的第二条出口（这条走查本来就是防"悄悄多一个读反思的口子"）。
+        "existing_decision_ids",
     }, f"ledger gained a public method without a push/reflection-output review: {query_methods}"
 
     # 聚合视图不含反思文本（数字视图与文本视图分离：绩效数字可公开，反思只随点内检索）

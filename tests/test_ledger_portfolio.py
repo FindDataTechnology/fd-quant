@@ -187,3 +187,81 @@ def test_payload_roundtrips_through_the_ledger(store):
     assert got is not None
     assert got["payload"]["rules"]["kind"] == "equal_weight"
     assert got["payload"]["weights"] == intent.weights
+
+
+# ------------------------- 出处可解析（spec portfolio-intent-contract 第 3 条）
+#
+# 这一条落在**真实调用点**上：不是"有个函数能查"，而是每次落组合记录时返回值里
+# 都带一份出处解析结果。否则再好的判据也只是没人调的函数。
+
+
+def _record_portfolio(store, intent, caller="c1", key="p-1"):
+    from fd_quant.ledger.tools import record_decision
+
+    return record_decision(
+        as_of="2026-06-30", pack="p", skill="k", payload=intent.to_dict(),
+        portfolio_key=key, record_kind="portfolio",
+        db_path=str(store.db_path),
+    )
+
+
+def test_portfolio_record_reports_unresolvable_origins(store, monkeypatch):
+    monkeypatch.setenv("FD_QUANT_CALLER", "c1")
+    out = _record_portfolio(store, _intent())
+    prov = out["result"]["provenance"]
+    assert prov["checked"] is True
+    assert prov["valid"] is False          # 三条评级从未落账 → 都解析不到
+    assert len(prov["unresolved"]) == 1
+    # 落账本身不受影响：只报事实，不拦
+    assert out["result"]["created"] is True
+
+
+def test_portfolio_record_resolves_after_the_ratings_are_recorded(store, monkeypatch):
+    """把评级先记进同一账本 → 同一份意图的出处就能解析了。"""
+    monkeypatch.setenv("FD_QUANT_CALLER", "c1")
+    from fd_quant.ledger.tools import record_decision
+
+    rid_rating = record_decision(
+        as_of="2026-06-30", pack="p", skill="k", payload=RATING, symbol="600519",
+        db_path=str(store.db_path),
+    )["result"]["decision_id"]
+    intent = build_intent(
+        [{"id": rid_rating, "as_of": "2026-06-30", "subject": "600519", "side": "buy",
+          "conviction": 0.8}],
+        {"kind": "equal_weight", "cash_floor": 0.2}, as_of="2026-06-30",
+        producer={"pack": "p", "skill": "k"},
+    )
+    out = _record_portfolio(store, intent)
+    prov = out["result"]["provenance"]
+    assert prov["valid"] is True and prov["resolved"] == 1
+    assert prov["unresolved"] == []
+
+
+def test_another_callers_ids_do_not_resolve_mine(store, monkeypatch):
+    """出处限定在**本人**范围：别人的 decision_id 不能当我的出处。"""
+    from fd_quant.ledger.tools import record_decision
+
+    monkeypatch.setenv("FD_QUANT_CALLER", "other")
+    foreign = record_decision(
+        as_of="2026-06-30", pack="p", skill="k", payload=RATING, symbol="600519",
+        db_path=str(store.db_path),
+    )["result"]["decision_id"]
+
+    monkeypatch.setenv("FD_QUANT_CALLER", "c1")
+    intent = build_intent(
+        [{"id": foreign, "as_of": "2026-06-30", "subject": "600519", "side": "buy"}],
+        {"kind": "equal_weight", "cash_floor": 0.2}, as_of="2026-06-30",
+        producer={"pack": "p", "skill": "k"},
+    )
+    out = _record_portfolio(store, intent)
+    assert out["result"]["provenance"]["unresolved"] == [foreign]
+
+
+def test_single_records_carry_no_provenance_block(store, monkeypatch):
+    """单体记录不带 provenance：它的出处不是权重实例，硬塞进来会让字段名撒谎。"""
+    monkeypatch.setenv("FD_QUANT_CALLER", "c1")
+    from fd_quant.ledger.tools import record_decision
+
+    out = record_decision(as_of="2026-06-30", pack="p", skill="k", payload=RATING,
+                          symbol="600519", db_path=str(store.db_path))
+    assert "provenance" not in out["result"]

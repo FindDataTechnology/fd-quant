@@ -99,16 +99,40 @@ def record_decision(
       reason (created | duplicate_key | revision_created | revision_duplicate)、decision_id
       (既有或新建的标识)、status (pending | settled)、revises、revision_seq (0=初始记录)、
       created_at、counts.decisions / counts.settlements / counts.pending / counts.settled ——
-      行数可用于核对"重复提交未产生第二行"）。单位：无（本工具不做算术）。
+      行数可用于核对"重复提交未产生第二行"）。组合记录另带 `provenance`
+      （`checked` / `valid` / `resolved` 条数 / `unresolved` 标识数组）：`derived_from`
+      在本账本（且限本人范围内）解析不到时逐条点名；**只报事实，不拦落账**。单位：无（本工具不做算术）。
       假设：账本不取数——任何价格 / 基准序列都由调用方传入；持有期按交易日计，交易日历由传入序列的日期集合隐式给出（账本不内置日历）。
     """
     store = _store(db_path)
+    caller = resolve_caller()
     result = store.record(
-        caller=resolve_caller(), as_of=as_of, symbol=symbol, pack=pack, skill=skill,
+        caller=caller, as_of=as_of, symbol=symbol, pack=pack, skill=skill,
         payload=payload, record_kind=record_kind, portfolio_key=portfolio_key,
         target_weights=target_weights, evidence=evidence, series_ref=series_ref,
         revises=revises, now=now,
     )
+    # 组合意图的出处必须「可解析」（spec `portfolio-intent-contract`「出处必填且可解析」）。
+    # 这里**只报事实、不拦落账**：意图本身可以先进账（它有自己的幂等与修订语义），
+    # 但「这几条出处在本账本里对不上」必须出现在返回值里——否则调用方无从知道第三方
+    # 拿这份意图重算时会断在哪一条。判定范围限定在**本人**的账本里（见
+    # `existing_decision_ids`）：拿别人的 id 当自己的出处属于越界。
+    if record_kind == "portfolio":
+        if isinstance(payload, Mapping):
+            derived = list(payload.get("derived_from") or [])
+        else:
+            derived = list(getattr(payload, "derived_from", None) or [])
+        if derived:
+            from ..portfolio import check_intent_provenance
+
+            prov = check_intent_provenance(
+                payload, store.existing_decision_ids(caller=caller, ids=derived))
+            result = {**result, "provenance": {
+                "checked": prov["checked"],
+                "valid": prov["valid"],
+                "resolved": len(prov["resolved"]),
+                "unresolved": prov["unresolved"],
+            }}
     return _envelope("record_decision", as_of, store, result)
 
 

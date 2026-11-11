@@ -1077,6 +1077,25 @@ class LedgerStore:
 
     # ── 查询 ─────────────────────────────────────────────────
 
+    def existing_decision_ids(self, *, caller: str, ids: Sequence[str]) -> set[str]:
+        """在**本人**范围内解析这些标识：返回确实存在的那些。
+
+        为什么要按 `caller` 圈定：组合意图的 `derived_from` 必须"可解析"（spec
+        `portfolio-intent-contract`「出处必填且可解析」），而"存在"只可能是**调用者自己
+        账本里的存在**——别人的判定对他不可见，拿别人的 id 来当自己的出处属于越界。
+        """
+        wanted = [str(i) for i in (ids or []) if str(i)]
+        if not wanted:
+            return set()
+        marks = ",".join("?" for _ in wanted)
+        with self._read() as con:
+            rows = con.execute(
+                f"SELECT decision_id FROM decisions WHERE caller = ? "
+                f"AND decision_id IN ({marks})",
+                (str(caller), *wanted),
+            ).fetchall()
+        return {str(r[0]) for r in rows}
+
     def get(self, decision_id: str) -> Optional[dict]:
         """单条快照：判定快照 + 结算结果（`pending` 记录的 `settlement` 为 null）。"""
         with self._read() as con:
