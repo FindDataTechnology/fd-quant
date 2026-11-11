@@ -22,6 +22,20 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts" / "verify_executor_gate_chain.py"
 
+#: 舰队种子住在**工作区**的另一个仓（`paas/`），不在本仓里。
+#: 单仓 CI 检出的是 `fd-quant/` 本身，`REPO.parent` 下没有 `paas/`——所以第 ③ 段
+#: （执岗稿是否把"阈值未配置"列为不行动条件）在单仓 CI 里**读不到对象**。
+#:
+#: 处理原则：**不假装跑过**。种子在 → 正常跑；种子不在 → `skip` 并写明该在哪跑。
+#: 另有一条测试钉住"种子读不到时脚本 exit 2 且点名路径"——那才是这条链在缺少对象时
+#: 应当有的行为（"跑不完整"绝不等于"没有违规"）。
+SEED = REPO.parent / "paas/docs/fleet-templates/invest-trading-fleet.seed.json"
+_NEEDS_SEED = pytest.mark.skipif(
+    not SEED.exists(),
+    reason=(f"舰队种子不在本仓检出范围内（{SEED}）；第③段属工作区级检查，"
+            "在 finddata 根跑 `python fd-quant/scripts/verify_executor_gate_chain.py`"),
+)
+
 
 def _load_script():
     """按路径加载校验脚本（不是包，故不能直接 import）。"""
@@ -48,6 +62,7 @@ def test_order_cannot_be_exported_without_a_usable_verdict(script):
     assert script._order_cannot_be_exported_without_a_usable_verdict() == []
 
 
+@_NEEDS_SEED
 def test_executor_prompt_lists_thresholds_unset_as_a_no_go(script):
     """执岗 persona 与节奏 prompt 把"阈值未配置"列为不行动条件。"""
     assert script._executor_prompt_lists_thresholds_unset_as_a_no_go(
@@ -56,8 +71,9 @@ def test_executor_prompt_lists_thresholds_unset_as_a_no_go(script):
 
 # --------------------------------------------------- 端到端与边界
 
-def test_chain_passes_when_run_as_ci_would_run_it():
-    """按 CI 的方式跑一次：exit 0，且末行不是"跑不完整"。"""
+@_NEEDS_SEED
+def test_chain_passes_in_the_workspace():
+    """在工作区里跑一次完整链路：exit 0，且三段全绿。"""
     proc = subprocess.run([sys.executable, str(SCRIPT)],
                           cwd=str(REPO), env={"PYTHONPATH": str(REPO), "PATH": "/usr/bin:/bin"},
                           capture_output=True, text=True, timeout=120)
