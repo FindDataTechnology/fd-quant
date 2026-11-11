@@ -158,12 +158,57 @@ def check_order_intent(d: Any) -> list[dict]:
     return errs
 
 
+def check_order_intent_provenance(intent: Any, known_source_ids: Sequence[str]) -> dict:
+    """校验 `derived_from` 的每条都能解析到一个**真实存在**的来源（权重实例或判定标识）。
+
+    spec「OrderIntent 的形状与出处」后半句：`derived_from` 非空只是形状；**可解析**才是
+    "这笔单是谁的决定"能被回答的前提。契约层不知道你那边有哪些权重实例与判定，所以
+    决议需要调用方给集合。
+
+    三态，缺省不冒充通过：
+      - `checked=False`  —— 没校验（形状都不合法，或没给集合）
+      - `checked=True, valid=True`  —— 每条都命中
+      - `checked=True, valid=False` —— 逐条点名悬空项
+
+    与 `portfolio.check_intent_provenance` 同一手法、同一返回值形状——两处出处要求
+    本来就是同一条规矩，别各写一套。
+    """
+    payload = intent.to_dict() if isinstance(intent, OrderIntent) else dict(intent or {})
+    errs = check_order_intent(payload)
+    if errs:
+        return {"checked": False, "valid": False, "resolved": [], "unresolved": [],
+                "errors": errs}
+
+    known = {str(i) for i in (known_source_ids or []) if str(i)}
+    derived = [str(i) for i in (payload.get("derived_from") or [])]
+    resolved = [i for i in derived if i in known]
+    unresolved = [i for i in derived if i not in known]
+    return {
+        "checked": True,
+        "valid": not unresolved,
+        "resolved": resolved,
+        "unresolved": unresolved,
+        "errors": [
+            {"path": f"derived_from[{derived.index(i)}]",
+             "reason": f"{i!r} does not resolve to a known weight instance or decision; "
+                       "an order whose origin cannot be read back must not reach execution"}
+            for i in unresolved
+        ],
+    }
+
+
 def export_order_intent(intent: OrderIntent | Mapping[str, Any],
-                        *, channel: str = "simulated") -> dict:
+                        *, channel: str = "simulated",
+                        known_source_ids: Optional[Sequence[str]] = None) -> dict:
     """把意图交给执行通道。只提供模拟通道；其余一律拒绝。
 
     拒绝是**明确的拒绝**（`ChannelNotAvailable`），不是"未实现"——两者在合规与合同上
     含义不同：前者说"我们不提供这条路"，后者暗示"以后会有"。
+
+    `known_source_ids`：你这边真实存在的来源标识（权重实例 id、判定 id）。给了就验
+    `derived_from` 可解析，悬空即拒绝——"不得进入执行"必须发生在**这道门**上，
+    而不是事后审计时才发现。不给则返回体里 `provenance.checked=false`，
+    **不假装查过**。
     """
     if channel not in ALLOWED_CHANNELS:
         raise ChannelNotAvailable(
@@ -184,10 +229,21 @@ def export_order_intent(intent: OrderIntent | Mapping[str, Any],
             "refusing to export an order intent while the risk thresholds are unknown"
         )
 
+    provenance: dict[str, Any] = {"checked": False}
+    if known_source_ids is not None:
+        prov = check_order_intent_provenance(payload, known_source_ids)
+        provenance = {k: prov[k] for k in ("checked", "valid", "unresolved")}
+        if not prov["valid"]:
+            raise OrderIntentError(
+                f"{prov['errors'][0]['path']}: {prov['errors'][0]['reason']} "
+                f"(unresolved: {prov['unresolved']})"
+            )
+
     return {
         "channel": channel,
         "exported": True,
         "paper_only": True,
+        "provenance": provenance,
         "intent": payload,
     }
 

@@ -162,3 +162,41 @@ def test_orphan_intent_is_reported_and_excluded_from_volume():
 def test_intent_without_id_is_an_error():
     with pytest.raises(OrderIntentError):
         reconcile([{"symbol": "600519"}], {})
+
+
+# ------------------------------------------- 4.1 后半句：出处必须可解析
+
+
+def test_provenance_resolves_when_the_source_is_known():
+    from fd_quant.order_intent import check_order_intent_provenance
+
+    out = check_order_intent_provenance(_intent(), ["2026-06-30-eq"])
+    assert out["checked"] is True and out["valid"] is True
+    assert out["resolved"] == ["2026-06-30-eq"]
+
+
+def test_unknown_source_is_named_not_just_counted():
+    from fd_quant.order_intent import check_order_intent_provenance
+
+    out = check_order_intent_provenance(_intent(derived_from=["gone-1"]), ["2026-06-30-eq"])
+    assert out["valid"] is False
+    assert out["unresolved"] == ["gone-1"]
+    assert any("gone-1" in e["reason"] for e in out["errors"])
+
+
+def test_export_refuses_a_dangling_origin():
+    """spec：「不得进入执行」必须发生在这道门上，而不是事后审计才发现。"""
+    with pytest.raises(OrderIntentError, match="does not resolve"):
+        export_order_intent(_intent(derived_from=["gone-1"]),
+                            known_source_ids=["2026-06-30-eq"])
+
+
+def test_export_without_a_source_set_does_not_claim_it_checked():
+    out = export_order_intent(_intent())
+    assert out["provenance"] == {"checked": False}
+
+
+def test_export_records_the_provenance_it_checked():
+    out = export_order_intent(_intent(), known_source_ids=["2026-06-30-eq"])
+    assert out["provenance"]["checked"] is True
+    assert out["provenance"]["valid"] is True
