@@ -83,11 +83,31 @@
                   "maximum": 1
                 },
                 "price_reference": {
-                  "description": "目标涨幅的分母（现价），symbol → 正数。仅 target_upside_weighted 需要；任一所选标的缺此值即整条规则拒绝，不得退回等权。",
+                  "description": "目标涨幅的分母（现价），symbol → 正数，或 symbol → {price: 正数, series_ref: PriceSeriesRef}。仅 target_upside_weighted 需要；任一所选标的缺此值即整条规则拒绝，不得退回等权。带 series_ref 时参考价携带出处（源 id / 复权口径 / 水位），rules 随 intent 逐字快照，故事后可回答「这个参考价是哪一路、哪天的」。带出处但形状不合法一律拒绝。",
                   "type": "object",
                   "additionalProperties": {
-                    "type": "number",
-                    "exclusiveMinimum": 0
+                    "oneOf": [
+                      {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "price": {
+                            "type": "number",
+                            "exclusiveMinimum": 0
+                          },
+                          "series_ref": {
+                            "$ref": "price-series-ref.schema.json"
+                          }
+                        },
+                        "required": [
+                          "price"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
                   }
                 },
                 "price_reference_as_of": {
@@ -1829,6 +1849,9 @@
         "counts": {
           "type": "object"
         },
+        "direction_judged": {
+          "type": "integer"
+        },
         "evidence": {
           "type": "array",
           "items": {
@@ -1862,6 +1885,9 @@
         "truncated": {
           "type": "boolean"
         },
+        "unjudged": {
+          "type": "array"
+        },
         "unresolvable": {
           "type": "array"
         }
@@ -1870,6 +1896,7 @@
         "as_of",
         "conflicts",
         "counts",
+        "direction_judged",
         "evidence",
         "input_end",
         "input_length",
@@ -1879,6 +1906,7 @@
         "records_judged",
         "temporal_evolution",
         "truncated",
+        "unjudged",
         "unresolvable"
       ],
       "additionalProperties": false
@@ -4087,6 +4115,9 @@
         "errors": {
           "type": "array"
         },
+        "provenance": {
+          "type": "object"
+        },
         "tool": {
           "type": "string"
         },
@@ -4096,6 +4127,7 @@
       },
       "required": [
         "errors",
+        "provenance",
         "tool",
         "valid"
       ],

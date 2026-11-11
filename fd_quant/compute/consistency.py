@@ -56,6 +56,22 @@ def _polarity(record: Mapping[str, Any]) -> Optional[int]:
     return ACTION_POLARITY.get(kind, {}).get(action)
 
 
+def _axis_known(record: Mapping[str, Any]) -> bool:
+    """这条记录的 action 是否落在该 `subject_kind` 已登记的语义轴上。
+
+    区分三态，别把"中性"和"判不了"混成一件事：
+      - 登记且极性 ≠ None → 可判方向；
+      - 登记且极性 = None（`hold` / `review`）→ **有意的中性**，算已知；
+      - kind 未登记，或该 kind 下没有这个 action（如 `stock` + `buy`）→ 判不了，
+        必须点名而不是当成"没冲突"。
+    """
+    kind = record.get("subject_kind") or "instrument"
+    table = ACTION_POLARITY.get(kind)
+    if table is None:
+        return False
+    return str(record.get("action") or "").strip() in table
+
+
 def _subject_key(record: Mapping[str, Any]) -> tuple[str, str]:
     return (
         str(record.get("subject_kind") or "instrument"),
@@ -194,6 +210,7 @@ def detect_conflicts(
         )
 
     unresolvable: list[dict] = []
+    unjudged: list[dict] = []
     alive: list[Mapping[str, Any]] = []
     for rec in records:
         bad = _unresolvable(rec)
@@ -205,6 +222,24 @@ def detect_conflicts(
                 "unresolved_ids": sorted(bad),
             })
             continue  # 引用不可解 → 不参与冲突判定
+        # 方向判不了的记录必须**点名**：未登记的 subject_kind（如 "stock"）或该 kind 下
+        # 不存在的 action，会让 `_polarity` 返回 None。此前这种记录默默进了 alive，
+        # 于是 records_judged 把它算成"已判"、conflicts 为空——**一份什么都没扫的
+        # 绿报告**。仍留在 alive 里参与前提矛盾判定（那条不需要方向极性）。
+        if not _axis_known(rec):
+            unjudged.append({
+                "decision_id": rec.get("decision_id"),
+                "as_of": rec.get("as_of"),
+                "subject_kind": rec.get("subject_kind"),
+                "subject": rec.get("subject"),
+                "action": rec.get("action"),
+                "reason": (
+                    f"action {rec.get('action')!r} is not on a registered axis for "
+                    f"subject_kind {rec.get('subject_kind')!r}; direction and "
+                    "evidence conflicts cannot be judged for this record "
+                    f"(known kinds: {sorted(ACTION_POLARITY)})"
+                ),
+            })
         alive.append(rec)
 
     conflicts: list[dict] = []
@@ -296,6 +331,7 @@ def detect_conflicts(
     # 输入起止由记录口径日的 min/max 表达；无记录时三者全 None（快照型语义）。
     b = EvidenceBuilder("decision_consistency:detect_conflicts", as_of)
     b.add("records_judged", len(alive), unit="count")
+    b.add("records_unjudged", len(unjudged), unit="count")
     b.add("conflicts_found", len(conflicts), unit="count")
     return result_envelope(
         "decision_consistency:detect_conflicts",
@@ -307,9 +343,13 @@ def detect_conflicts(
             "conflicts": conflicts,
             "temporal_evolution": evolution,
             "unresolvable": unresolvable,
+            "unjudged": unjudged,
             "counts": counts,
             "truncated": False,
             "records_judged": len(alive),
+            #: 真正参与了方向判定（或方向上有意中性，如 hold/review）的记录数。
+            #: `records_judged` 含"进来了但方向判不了"的记录，故两者相等才算全判。
+            "direction_judged": len(alive) - len(unjudged),
             "records_excluded": len(unresolvable),
         },
     )

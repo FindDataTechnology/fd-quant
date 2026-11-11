@@ -217,3 +217,52 @@ def test_evidence_and_input_range_returned():
     assert all(e["source"].startswith("fd-quant:") for e in out["evidence"])
     assert all(set(e) == {"evidence_id", "label", "value", "unit", "as_of", "source"}
                for e in out["evidence"])
+
+
+# --- 方向判不了的记录必须点名（不是"没冲突"）-----------------------------------
+
+def test_unregistered_subject_kind_is_named_not_silently_clean():
+    """未登记的 subject_kind 会让方向判定整个失效。
+
+    此前的行为：两条 buy/sell 记录默默进了 alive，`records_judged=2`、
+    `conflicts=[]` —— 一份**什么都没扫的绿报告**。现在必须点名，并让
+    `direction_judged` 与 `records_judged` 拉开差距。
+    """
+    out = detect_conflicts(as_of=AS_OF, records=[
+        rec(decision_id="a", action="buy", subject_kind="stock"),
+        rec(decision_id="b", action="sell", subject_kind="stock",
+            evidence=[{"evidence_id": "e2"}], target_evidence_ids=["e2"]),
+    ])
+
+    assert out["conflicts"] == []
+    assert out["direction_judged"] == 0
+    assert len(out["unjudged"]) == 2
+    assert {u["decision_id"] for u in out["unjudged"]} == {"a", "b"}
+    assert "not on a registered axis" in out["unjudged"][0]["reason"]
+    # 计数器必须自证"没真判"：judged 含进来了的，direction_judged 才是判了的
+    assert out["records_judged"] == 2
+
+
+def test_neutral_actions_are_judged_not_unjudged():
+    """hold / review 是**有意的中性**（极性 None 但登记在案），不算判不了。"""
+    out = detect_conflicts(as_of=AS_OF, records=[
+        rec(decision_id="a", action="hold"),
+        rec(decision_id="b", action="review", price_target=None),
+    ])
+
+    assert out["unjudged"] == []
+    assert out["direction_judged"] == 2
+
+
+def test_unregistered_kind_still_participates_in_premise_conflicts():
+    """判不了方向 ≠ 踢出分析：前提矛盾不依赖极性，未登记 kind 也要能检出。"""
+    out = detect_conflicts(as_of=AS_OF, records=[
+        rec(decision_id="a", action="buy", subject_kind="stock", preconditions=[
+            {"metric_ref": "m.roe", "comparator": "gt", "threshold": 5}]),
+        rec(decision_id="b", action="sell", subject_kind="stock",
+            evidence=[{"evidence_id": "e2"}], target_evidence_ids=["e2"], preconditions=[
+                {"metric_ref": "m.roe", "comparator": "lt", "threshold": 3}]),
+    ])
+
+    assert out["counts"].get(PREMISE_CONFLICT) == 1
+    assert len(out["unjudged"]) == 2
