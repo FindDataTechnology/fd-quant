@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from fd_quant.contracts.models import (
@@ -191,7 +192,7 @@ def build_intent(
     conv_floor = None if conv_floor is None else float(conv_floor)
     decision_day = _parse_iso(as_of, "as_of")
 
-    # 1) as_of 守卫：先判越界，再谈权重。
+    # 1) 入参守卫：as_of 越界先拒，评级缺主体也拒。
     for i, r in enumerate(ratings):
         r_date = _parse_iso(_rating_get(r, "as_of"), f"ratings[{i}].as_of")
         if r_date > decision_day:
@@ -201,8 +202,20 @@ def build_intent(
                 f"later than as_of={decision_day.isoformat()}; refusing to use future "
                 "information (not truncated silently)",
             )
+        # 没有主体的评级产出的是 `rating[i]` 这种**永远解析不到**的出处 id
+        # （见 `_rating_id` 的兜底）。宁可当场拒绝，也不留一条查不回去的出处。
+        subject = _rating_get(r, "subject")
+        if not (isinstance(subject, str) and subject):
+            raise IntentBuildError(
+                f"ratings[{i}].subject",
+                "must be a non-empty string: an id synthesised from a missing subject "
+                "cannot be resolved back to a rating",
+            )
 
     # 2) universe
+    subjects_with_rating = {
+        s for s in (_rating_get(r, "subject") for r in ratings) if isinstance(s, str) and s
+    }
     if universe is None:
         seen: list[str] = []
         for r in ratings:
@@ -212,6 +225,16 @@ def build_intent(
         universe_list = seen
     else:
         universe_list = [str(s) for s in universe]
+        # 出处要求（spec「出处必填且可解析」）：universe 里每个标的都必须来自至少一条
+        # `Rating` 的 subject。不查这一条，'组合里有一只从没人判过的标的' 会静默变成
+        # '该标的不配仓'——报告上看起来是"入选 0 条"，实质是输入缺了一条判定。
+        uncovered = [s for s in universe_list if s not in subjects_with_rating]
+        if uncovered:
+            raise IntentBuildError(
+                "universe",
+                f"no rating covers {uncovered}; every universe symbol must come from at "
+                "least one rating's subject (refused, not silently left unweighted)",
+            )
     uni_set = set(universe_list)
 
     # 3) 逐条判定入选 / 排除
@@ -327,7 +350,70 @@ def build_intent(
     return intent
 
 
-__all__ = ["build_intent", "IntentBuildError", "RULE_KINDS", "SELECTED_SIDES", "EXCLUSION_REASONS"]
+def check_intent_provenance(intent: Any, known_rating_ids: Iterable[str]) -> dict:
+    """`derived_from` 的每个标识都必须解析到一条**真实存在**的评级。
+
+    spec「出处必填且可解析」的后半句：`derived_from` 非空只是形状，**可解析**才是
+    它能被第三方照着重算的前提。契约层校验做不到这一点——它不读库、不联网，手边
+    只有实例本身。所以决议留给调用方提供"我这边真实存在的评级标识集合"。
+
+    这不是把责任推给调用方：谁持有评级，谁才答得出"这条出处存不存在"。反过来，
+    不提供集合就等于**没检查**，而"没检查"绝不能读成"都解析得到"——因此缺省不返回
+    `valid=True`，而是 `checked=False`。
+
+    Args:
+        intent: `PortfolioIntent` 实例、dict 或 JSON 字符串。
+        known_rating_ids: 真实存在的评级标识（账本里的 decision_id、或转换时用的
+            `subject@as_of`）。传空集合 = 一条都不存在，所有出处都算悬空。
+
+    Returns:
+        ``{"checked": bool, "valid": bool, "resolved": [...], "unresolved": [...],
+        "errors": [{"path", "reason"}]}``。`unresolved` 逐条点名，不汇总成一句
+        "有出处解析不到"——那正是让人查不下去的形态。
+    """
+    from fd_quant.contracts.models import PortfolioIntent as _PI
+
+    if isinstance(intent, _PI):
+        d = intent.to_dict()
+    elif isinstance(intent, (str, bytes)):
+        try:
+            d = json.loads(intent)
+        except (TypeError, ValueError) as exc:
+            return {"checked": False, "valid": False, "resolved": [], "unresolved": [],
+                    "errors": [{"path": "$", "reason": f"invalid JSON: {exc}"}]}
+    elif isinstance(intent, Mapping):
+        d = dict(intent)
+    else:
+        return {"checked": False, "valid": False, "resolved": [], "unresolved": [],
+                "errors": [{"path": "$", "reason": "must be a PortfolioIntent, dict or JSON"}]}
+
+    # 先过契约，再谈出处：形状都不对的实例，解析结论没有意义。
+    errs = check_portfolio_intent(d)
+    if errs:
+        return {"checked": False, "valid": False, "resolved": [], "unresolved": [],
+                "errors": errs}
+
+    known = {str(i) for i in (known_rating_ids or []) if str(i)}
+    derived = [str(i) for i in (d.get("derived_from") or [])]
+    resolved = [i for i in derived if i in known]
+    unresolved = [i for i in derived if i not in known]
+    errors = [
+        {"path": f"derived_from[{derived.index(i)}]",
+         "reason": f"{i!r} does not resolve to a known rating; a weight whose origin "
+                   "cannot be read back cannot be recomputed by a third party"}
+        for i in unresolved
+    ]
+    return {
+        "checked": True,
+        "valid": not unresolved,
+        "resolved": resolved,
+        "unresolved": unresolved,
+        "errors": errors,
+    }
+
+
+__all__ = ["build_intent", "check_intent_provenance", "IntentBuildError", "RULE_KINDS",
+           "SELECTED_SIDES", "EXCLUSION_REASONS"]
 
 
 # ── MCP 工具外壳（add-portfolio-intent-contract task 5.1）─────────────
@@ -379,16 +465,29 @@ def build_portfolio_intent(
     }
 
 
-def validate_portfolio_intent_tool(intent: Any) -> dict:
+def validate_portfolio_intent_tool(intent: Any, known_rating_ids: Optional[Sequence[str]] = None) -> dict:
     """校验一个 PortfolioIntent 实例（严格：未知字段、不变式、出处、排除原因）。
 
-    Input: intent（实例 dict 或 JSON 字符串）。
-    Returns: {"valid": bool, "errors": [{"path", "reason"}]}。
-      errors 每条都带字段路径与可读原因，**从不是**一句 "invalid"。
+    Input: intent（实例 dict 或 JSON 字符串）; known_rating_ids（可选，你这边真实存在
+      的评级标识，例如账本里的 decision_id）。给了就顺带验"出处可解析"——每个
+      `derived_from` 都必须命中一条；不给则只验形状。
+    Returns: {"valid": bool, "errors": [{"path", "reason"}], "provenance": {...}}。
+      errors 每条都带字段路径与可读原因，**从不是**一句 "invalid"；
+      provenance 缺省为 `{"checked": false}`——"没查过"绝不冒充"查过且通过"。
     """
     from fd_quant.contracts.models import validate_portfolio_intent as _v
 
-    return {"tool": "validate_portfolio_intent", **_v(intent)}
+    out = {"tool": "validate_portfolio_intent", **_v(intent)}
+    if known_rating_ids is None:
+        out["provenance"] = {"checked": False}
+        return out
+    prov = check_intent_provenance(intent, known_rating_ids)
+    out["provenance"] = prov
+    if prov["checked"] and not prov["valid"]:
+        # 形状合法但出处悬空 → 整个实例被拒（spec: 任一条无法解析即拒绝）。
+        out["valid"] = False
+        out["errors"] = list(out.get("errors") or []) + prov["errors"]
+    return out
 
 
 def to_target_weights(intent: Any) -> dict:

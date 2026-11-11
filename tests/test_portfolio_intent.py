@@ -454,3 +454,90 @@ def test_unknown_fields_inside_a_reference_entry_are_rejected():
         "price_reference": {"600519": {"price": 1500.0, "series_ref": REF, "note": "x"}},
     }))
     assert any(e["path"].endswith(".note") for e in errs), errs
+
+
+# --------------------------- 出处可解析（spec「出处必填且可解析」后半句）
+
+def _built():
+    ratings = [_rating(subject="600519"), _rating(subject="000001", conviction=0.6),
+               _rating(subject="000333", side="hold")]
+    return build_intent(ratings, {"kind": "equal_weight", "cash_floor": 0.2},
+                        as_of="2026-06-30", producer=PROD)
+
+
+def test_provenance_resolves_when_every_id_is_known():
+    """同一次构造产出的出处，拿回头验必须条条命中——否则"可解析"只是句口号。"""
+    from fd_quant.portfolio import check_intent_provenance
+
+    intent = _built()
+    out = check_intent_provenance(intent, set(intent.derived_from))
+    assert out["checked"] is True
+    assert out["valid"] is True
+    assert out["unresolved"] == []
+    assert len(out["resolved"]) == 3
+
+
+def test_dangling_provenance_is_rejected_and_named():
+    """spec 场景「悬空出处被拒绝」：r-404 不存在 → 拒绝并点名，不产出权重。"""
+    from fd_quant.portfolio import check_intent_provenance
+
+    out = check_intent_provenance(_valid(derived_from=["r-1", "r-404"]), {"r-1"})
+    assert out["checked"] is True
+    assert out["valid"] is False
+    assert out["unresolved"] == ["r-404"]
+    assert any("r-404" in e["reason"] for e in out["errors"])
+
+
+def test_provenance_not_checked_is_not_a_pass():
+    """没给集合 = 没查过。返回 valid=True 会让"没查"与"查过且过"同形。"""
+    from fd_quant.portfolio import check_intent_provenance
+
+    out = check_intent_provenance(_built(), set())
+    assert out["valid"] is False          # 空集合就是"一条都不存在"
+    assert out["unresolved"]              # 逐条点名，不是一句"有出处悬空"
+
+
+def test_provenance_refuses_an_invalid_instance_before_resolving():
+    from fd_quant.portfolio import check_intent_provenance
+
+    out = check_intent_provenance(_valid(weights={"x": 5}), {"r1", "r2"})
+    assert out["checked"] is False
+    assert out["valid"] is False
+    assert out["errors"]
+
+
+def test_tool_reports_unchecked_provenance_as_unchecked():
+    """MCP 工具不给集合时必须自报"没查过"，不能默默判通过。"""
+    from fd_quant.portfolio import validate_portfolio_intent_tool
+
+    out = validate_portfolio_intent_tool(_valid())
+    assert out["valid"] is True
+    assert out["provenance"] == {"checked": False}
+
+
+def test_tool_rejects_dangling_provenance():
+    from fd_quant.portfolio import validate_portfolio_intent_tool
+
+    out = validate_portfolio_intent_tool(
+        _valid(derived_from=["r-1", "r-404"]), known_rating_ids=["r-1"])
+    assert out["valid"] is False
+    assert any("r-404" in e["reason"] for e in out["errors"])
+
+
+def test_universe_symbol_without_a_rating_is_rejected_and_named():
+    """universe 里的标的必须来自至少一条评级；否则"没判过"会静默变成"不配仓"。"""
+    with pytest.raises(IntentBuildError) as ei:
+        build_intent([_rating(subject="600519")],
+                     {"kind": "equal_weight", "cash_floor": 0.2},
+                     as_of="2026-06-30", universe=["600519", "999999"], producer=PROD)
+    assert "999999" in str(ei.value)
+    assert ei.value.path == "universe"
+
+
+def test_rating_without_a_subject_is_rejected():
+    """缺主体会合成 `rating[i]` 这种查不回去的出处 id，宁可当场拒。"""
+    with pytest.raises(IntentBuildError) as ei:
+        build_intent([{"as_of": "2026-06-30", "side": "buy", "conviction": 0.5}],
+                     {"kind": "equal_weight", "cash_floor": 0.2},
+                     as_of="2026-06-30", producer=PROD)
+    assert ei.value.path == "ratings[0].subject"

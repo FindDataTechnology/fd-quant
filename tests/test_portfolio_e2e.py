@@ -17,7 +17,7 @@ from fd_quant.contracts.models import (
     validate_target_weights,
 )
 from fd_quant.ledger.store import LedgerStore
-from fd_quant.portfolio import build_intent
+from fd_quant.portfolio import build_intent, check_intent_provenance
 
 # 三条构造评级：两只入选、一只因 side 被排除。
 RATINGS = [
@@ -44,8 +44,13 @@ def test_chain_from_ratings_to_executable_weights():
     intent = _intent()
     assert validate_portfolio_intent(intent)["valid"] is True
 
-    # 三段出处都可解析：derived_from 三条 = 2 入选 + 1 排除
-    assert len(intent.derived_from) == 3
+    # 三段出处**可解析**：derived_from 的每条都必须命中输入评级的标识。
+    # 早先这里只写 `len(derived_from) == 3`——那条断言连"解析"两个字都没碰到，
+    # 把标识换成任何三条乱码也照样绿（本轮审计发现，已换成真判据）。
+    input_ids = {f"{r['subject']}@{r['as_of']}" for r in RATINGS}
+    assert set(intent.derived_from) == input_ids
+    prov = check_intent_provenance(intent, input_ids)
+    assert prov["checked"] is True and prov["valid"] is True, prov
     assert len(intent.excluded) == 1
     assert intent.excluded[0]["reason"] == "side_not_selected"
     assert len(intent.derived_from) - len(intent.excluded) == len(intent.weights)
