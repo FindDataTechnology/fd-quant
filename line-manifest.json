@@ -13,10 +13,10 @@
       "kind": "line-native",
       "name": "mcp-bearer-token",
       "accepts": "line-native-key",
-      "fallback": false,
-      "enforced": false,
+      "fallback": true,
+      "enforced": true,
       "migration_task": "converge-line-identity-and-keys#8.6",
-      "note": "线自有共享钥匙，**代码已落地并自检**（门判据 9 条 + 接线分支用例），但**未在运行路径生效**：生产部署没有 `MCP_BEARER_TOKEN`，且经 MCP 网关的消费者拿不到自己的 Authorization（网关按设计剥离调用方凭据）——现在翻开关会把本线所有网关消费者打成 401。翻转前提（8.6，机制 2026-11-12 查证过）：**不是** paas 侧 X-Authorization 中继——`fd-infra-deploy/mcp-registry/prod/auth-server.yaml:75-82` 记着 law-bench 2026-11-11 加进 `INGRESS_RELAY_SERVERS` 当天就撤出的实测：`/validate` 把 `X-Authorization` 当调用方身份，共享不透明令牌放那儿会在边缘被判非法 401。正解是**注册表服务器级 backend auth 注入**：该 server 行 `auth_scheme=bearer` + `auth_credential=<同一把共享令牌>`（Fernet 加密；`auth_scheme != none` 时必填），出口由 auth-server 把 `Authorization` **换成**这把令牌（`PATCH /api/servers/<path>/auth-credential`，law-bench 就是这么修的）。两步：① 注册表写 backend auth（pod 内 :7860 带内部令牌）→ ② 线侧部署注入同一值 `MCP_BEARER_TOKEN` 并滚版，验收「网关来路 200 / 匿名直连 401」。顺带好副作用：`auth_scheme=bearer` 后 registry 探活带凭据，`num_tools=0` 那个老毛病也一起消失。"
+      "note": "线自有共享钥匙（`MCP_BEARER_TOKEN`），**已在运行路径生效**（2026-11-12 翻转，change converge-line-identity-and-keys 8.6）。翻转两步：① 注册表服务器级 backend auth（该 server 行 `auth_scheme=bearer` + `auth_credential` = 同一把令牌，出口由 auth-server 把 `Authorization` 换成它；`PATCH /api/servers/<path>/auth-credential`）→ ② 线侧 Secret `fd-quant-line-token` 注入 `MCP_BEARER_TOKEN` 并滚版（本线镜像 `sha-f2df5a7`）。**实测判据**（历次同形）：匿名直连 **401** `{\"error\":\"unauthorized\"}`、假令牌 **401**、真令牌 **200** 且拿到 MCP session；探针路径 /health,/healthz 豁免（不带令牌仍 200）；注册表行 `scheme=bearer enabled=true health=healthy tools=58`；消费者 fd-paper-trading 带同一令牌实测 200、匿名 401。**这正是 fallback 轨**：摘掉平台后，持有该令牌的客户仍能直接消费本线。⚠️ 共享钥匙**不承载客户身份**——客户级隔离/配额仍要靠平台（词元轨，见 `ciyuan-sk` 那条的 migration_task）。"
     },
     {
       "kind": "customer-key",
