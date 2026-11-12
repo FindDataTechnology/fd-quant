@@ -1,0 +1,35 @@
+{
+  "schema": "line-manifest/v1",
+  "line": "quant",
+  "public_base_url": "https://mcp.finddatatech.cloud/fd-quant",
+  "identity": {
+    "issuer": "https://auth.finddatatech.cloud/oidc",
+    "jwks_uri": "https://auth.finddatatech.cloud/oidc/jwks",
+    "jit_policy": "off",
+    "note": "本仓不验凭据，只把 `Authorization` 里 bearer 的**稳定指纹**（SHA-256 前 12 位）当调用者标识（caller.py:39-60；ledger/tools.py:76-77）；`FastMCP` 未传 auth（server.py:55；compute/server.py:23）。指纹能区分调用者，但不是鉴权——伪造/缺失都放行。无断言兑换端点，jit_policy=off。"
+  },
+  "auth_tracks": [
+    {
+      "kind": "customer-key",
+      "accepts": "ciyuan-sk",
+      "fallback": false,
+      "enforced": false,
+      "migration_task": "converge-line-identity-and-keys#8.3",
+      "note": "未接：本仓不校验凭据，词元钥匙来去都只是「一个不同的指纹」。"
+    }
+  ],
+  "scopes": [
+    "line:read",
+    "line:write"
+  ],
+  "billing": {
+    "plane": "ciyuan",
+    "note": "本仓零计费代码（grep `sub2api` 无命中）：按调用扣费发生在网关/registry 的词元平面，不在本线代码里。ledger 是**调用台账**（谁在何时跑了哪族计算，含结算窗口计算），不是钱；真实扣费在词元平面。"
+  },
+  "surfaces": {
+    "mcp": true,
+    "account": false,
+    "admin": false
+  },
+  "note": "两组共 58 工具：①确定性计算面七族（只对传入序列作答，不取数/不联网/不调 LLM）②结算与台账面（3 个非只读）。`caller` 不是入参而是由调用上下文解析，故本线天然多租户隔离，但没有身份校验。"
+}
