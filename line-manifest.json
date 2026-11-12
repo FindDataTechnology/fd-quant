@@ -6,7 +6,7 @@
     "issuer": "https://auth.finddatatech.cloud/oidc",
     "jwks_uri": "https://auth.finddatatech.cloud/oidc/jwks",
     "jit_policy": "off",
-    "note": "生产态今天仍是零入站凭据校验（部署未注入任何 token）。但**代码里已备好共享 bearer 门**：`fd_quant/auth.py` 的 `BearerAuthMiddleware`（恒时比较、`MCP_BEARER_TOKEN` 每请求重读、lifespan 放行、`/health` 与 `/healthz` 精确豁免），未设变量时走原路径（serve_http()（server.py:132-152），与接入前逐字节一致）。原料：本仓不验凭据，只把 `Authorization` 里 bearer 的**稳定指纹**（SHA-256 前 12 位）当调用者标识（caller.py:39-60；ledger/tools.py:76-77）；`FastMCP` 未传 auth（server.py:55；compute/server.py:23）。指纹能区分调用者，但不是鉴权——伪造/缺失都放行。无断言兑换端点，jit_policy=off。"
+    "note": "线自有共享 bearer 门**已在生产生效**（2026-11-12 翻转，change converge-line-identity-and-keys 8.6）：`MCP_BEARER_TOKEN` 由线级 Secret 注入，注册表该 server 行 `auth_scheme=bearer` + `auth_credential` 为同一把令牌（出口把 `Authorization` 换成它）；匿名直连 401、带令牌 200。同时提供线自描述端点 `/.well-known/line-manifest.json`（公开、免鉴权、零网络，`Cache-Control: public, max-age=300`），**原样回吐**本仓 `line-manifest.json` 的字节；该路径在门的 `EXEMPT_PATHS` 里，所以未持凭据的平台/客户也能读到「这条线认哪些钥匙」。本仓计算面不取数、不联网；账本落本地 SQLite。这把钥匙是**线级**共享钥匙，一把全客户共用，不承担客户级身份（谁在用由网关/注册表记录）；每客户一把需要钥匙库 + 吊销面，属后续 8.x。`jit_policy=off`：无断言兑换端点。"
   },
   "auth_tracks": [
     {

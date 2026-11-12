@@ -54,6 +54,10 @@ INSTRUCTIONS = (
 def build_server() -> FastMCP:
     app = FastMCP(name=SERVER_NAME, instructions=INSTRUCTIONS)
 
+    from . import wellknown
+
+    wellknown.register(app)  # /.well-known/line-manifest.json（公开、免鉴权、零网络）
+
     missing = missing_families()
     if missing:
         # 不静默：缺族时在 stderr 留痕，免得"工具面少了一族"被当成正常。

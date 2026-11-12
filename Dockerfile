@@ -16,6 +16,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# 线自描述端点 /.well-known/line-manifest.json（change converge-line-identity-and-keys 1.4）：
+# 仓内那份是唯一真源，端点原样回吐；不 COPY 进镜像则镜像里永远 404。
+COPY line-manifest.json ./
 COPY pyproject.toml README.md ./
 COPY fd_quant ./fd_quant
 
