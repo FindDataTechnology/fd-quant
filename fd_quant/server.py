@@ -123,11 +123,33 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.http:
-        app.run(transport="http", host=args.host, port=args.http)
+        serve_http(args.host, args.http)
         return 0
 
     app.run()  # stdio
     return 0
+
+
+def serve_http(host: str, port: int) -> None:  # pragma: no cover - 传输层
+    """HTTP 面：配了 ``MCP_BEARER_TOKEN`` 才套共享 bearer 门，否则原样跑。
+
+    未配置分支保持 ``app.run(transport="http")``——与接入前逐字节一致。这是
+    「开关关闭时行为不变」唯一可靠的实现方式：不是挂一个内部空转的中间件。
+    """
+    from .auth import BearerAuthMiddleware, configured_token
+
+    if not configured_token():
+        app.run(transport="http", host=host, port=port)
+        return
+
+    import uvicorn
+    from starlette.middleware import Middleware
+
+    uvicorn.run(
+        app.http_app(middleware=[Middleware(BearerAuthMiddleware)]),
+        host=host,
+        port=port,
+    )
 
 
 if __name__ == "__main__":
