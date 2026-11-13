@@ -482,23 +482,82 @@ def judge_water(rep: Report, snap: dict, *, now: dt.date, max_stale_days: int) -
 # ── 供给归因（design D5）────────────────────────────────────
 
 
-#: 归因判据的三行表：尝试次数 × 产出观测数 → 结论。顺序即优先级。
-ATTRIBUTION_RULES = (
-    ("not_dispatched", "窗口内没有任何抓取尝试 → 该概念族不在派发范围内（不是故障，是范围）"),
-    ("fetch_failing", "有抓取尝试但零产出 → 抓取失败（再看 classification 分 transient/ban）"),
-    ("write_path_broken", "有尝试也有产出但水位停旧 → 写路径或映射断（新数据落到别的口径）"),
-    ("producing", "有尝试且有新产出 → 供给正常"),
-)
+#: 归因判据（design D5，2026-11-13 修版）。**只看 fetch_log 会得出错误结论**：
+#: A 股价格走的是 `bulk_ingest_astock_daily.py` 批量路径，它不写 fetch_log，
+#: 于是一个"策略存在、启用、每天在跑、但每次失败"的族会被误判成"从未纳入派发"。
+#: 所以必须先看 `crawl_policies` / `policy_runs`，再看 fetch_log。
+ATTRIBUTION_READINGS = {
+    "producing": "近端有新观测 → 供给正常",
+    "dispatch_blocked": "有启用策略，但存在超期的 open run（卡死）→ 后续派发被单飞锁全部挡掉",
+    "dispatch_failing": "有启用策略且在派发，但近期 run 全部失败 → 看 policy_runs.detail 的失败原因",
+    "zero_yield": "策略在跑且报成功，但没有新观测 → 抓到了却写不进来（口径/映射）或上游确实无新数据",
+    "fetch_failing": "有抓取尝试但零观测 → 抓取失败（看 fetch_log.classification 分 transient/ban）",
+    "no_policy": "无启用策略且无抓取尝试 → 该概念族确实从未纳入派发",
+}
+
+#: open run 超过这个时长即视为卡死。与派发侧 Job 的 `activeDeadlineSeconds`（3h）对齐：
+#: Job 早被杀了而行还写着 running，就是"行没关"，不是"还在跑"。
+OPEN_RUN_STUCK_SECONDS = 3 * 3600
 
 
-def attribute_supply(*, days: int = 60, dsn: Optional[str] = None) -> dict:
-    """按「抓取次数 vs 产出观测数」给价格供给定性（只读）。
+def classify_supply(
+    *,
+    attempts: int,
+    observations: int,
+    latest_observation: Optional[str],
+    policies: Sequence[dict],
+    runs: Sequence[dict],
+    open_run_age_seconds: Optional[int],
+    now: dt.date,
+    max_stale_days: int,
+) -> str:
+    """纯函数：把一次供给快照判归因。IO 在 `attribute_supply`，判定在这里。
 
-    **为什么不用 `schedules` 表判"有没有被调度"**：那张表在生产里**全表 0 行**
-    （2026-11-13 实测），任何"某概念没有 schedule 行"的推论对每个概念都成立，
-    等于什么都没说。空表不能证明不存在——这是本项目反复踩过的同一个坑。
-    `fetch_log` 才是"有没有真的去抓"的事实源。
+    顺序即优先级，且**先看策略层**：策略存在但没在跑，和"根本没有策略"是两种病，
+    修法完全不同（一个是清卡死的 run，一个是加派发）。
     """
+    enabled = [p for p in policies if p.get("enabled")]
+    if not enabled:
+        if attempts > 0:
+            return "fetch_failing" if observations == 0 else "producing"
+        return "no_policy"
+
+    if open_run_age_seconds is not None and open_run_age_seconds > OPEN_RUN_STUCK_SECONDS:
+        return "dispatch_blocked"
+
+    recent = list(runs)[:5]
+    if recent and all(r.get("status") == "failed" for r in recent):
+        return "dispatch_failing"
+
+    fresh = False
+    if latest_observation:
+        try:
+            d = dt.date.fromisoformat(str(latest_observation)[:10])
+            fresh = (now - d).days <= max_stale_days
+        except ValueError:
+            fresh = False
+    if fresh:
+        return "producing"
+    if recent and any(r.get("status") in ("success", "zero_yield") for r in recent):
+        return "zero_yield"
+    return "zero_yield" if observations else "fetch_failing"
+
+
+def attribute_supply(
+    *, days: int = 60, dsn: Optional[str] = None,
+    max_stale_days: int = 7, now: Optional[dt.date] = None,
+) -> dict:
+    """按「策略层 + 抓取层 + 产出层」三层给价格供给定性（只读）。
+
+    **为什么不能只看 `schedules`**：那张表在生产里**全表 0 行**（2026-11-13 实测），
+    任何"某概念没有 schedule 行"的推论对每个概念都成立，等于什么都没说。
+    **为什么也不能只看 `fetch_log`**：A 股价格走批量脚本路径，不写 fetch_log；
+    策略在跑但每次失败时，fetch_log 是 0 尝试——据此会误判成"从未纳入派发"
+    （2026-11-13 我在本轮探索中就这么错过一次，已有回归用例钉住）。
+    三层都要看：`crawl_policies`（有没有派发）→ `policy_runs`（派发跑成什么样）
+    → `fetch_log` / `semantic_observations`（有没有真的抓与写）。
+    """
+    now = now or dt.date.today()
     dsn = dsn or _semantic_dsn()
     if not dsn:
         return {
@@ -520,6 +579,11 @@ def attribute_supply(*, days: int = 60, dsn: Optional[str] = None) -> dict:
         cur = con.cursor()
         for entity_type in ("stock", "fund", "index"):
             cur.execute(
+                "SELECT id FROM concepts WHERE code = 'price.close' AND entity_type = %s",
+                (entity_type,),
+            )
+            concept_ids = [r[0] for r in cur.fetchall()]
+            cur.execute(
                 "SELECT COUNT(*) FROM fetch_log f"
                 " JOIN concepts c ON c.id = f.concept_id"
                 " WHERE c.code = 'price.close' AND c.entity_type = %s"
@@ -536,20 +600,61 @@ def attribute_supply(*, days: int = 60, dsn: Optional[str] = None) -> dict:
                 (entity_type, entity_type),
             )
             produced, latest = cur.fetchone()
-            produced = int(produced)
-            if attempts == 0:
-                kind = "not_dispatched"
-            elif produced == 0:
-                kind = "fetch_failing"
-            else:
-                kind = "producing"
+
+            policies: list[dict] = []
+            runs: list[dict] = []
+            open_age: Optional[int] = None
+            if concept_ids:
+                cur.execute(
+                    "SELECT id, name, cron_expr, enabled, concept_ids FROM crawl_policies"
+                    " WHERE enabled AND concept_ids && %s::text[]",
+                    ([str(c) for c in concept_ids],),
+                )
+                policies = [
+                    {"id": r[0], "name": r[1], "cron": r[2], "enabled": r[3]}
+                    for r in cur.fetchall()
+                ]
+                if policies:
+                    pids = [p["id"] for p in policies]
+                    cur.execute(
+                        "SELECT policy_id, status, started_at, finished_at, detail"
+                        " FROM policy_runs WHERE policy_id = ANY(%s)"
+                        " ORDER BY started_at DESC LIMIT 10",
+                        (pids,),
+                    )
+                    runs = [
+                        {
+                            "policy_id": r[0], "status": r[1],
+                            "started_at": str(r[2]), "finished_at": str(r[3]) if r[3] else None,
+                            "detail": (r[4] or "")[:160],
+                        }
+                        for r in cur.fetchall()
+                    ]
+                    cur.execute(
+                        "SELECT EXTRACT(EPOCH FROM (now() - MIN(started_at)))"
+                        " FROM policy_runs WHERE policy_id = ANY(%s)"
+                        "   AND status IN ('running','queued')",
+                        (pids,),
+                    )
+                    age = cur.fetchone()[0]
+                    open_age = int(age) if age is not None else None
+
+            kind = classify_supply(
+                attempts=attempts, observations=int(produced),
+                latest_observation=str(latest) if latest else None,
+                policies=policies, runs=runs, open_run_age_seconds=open_age,
+                now=now, max_stale_days=max_stale_days,
+            )
             out.append({
                 "entity_type": entity_type,
                 "attempts": attempts,
-                "observations": produced,
+                "observations": int(produced),
                 "latest_observation": str(latest) if latest else None,
+                "policies": policies,
+                "recent_runs": runs[:3],
+                "open_run_age_seconds": open_age,
                 "attribution": kind,
-                "reading": dict(ATTRIBUTION_RULES)[kind],
+                "reading": ATTRIBUTION_READINGS.get(kind, ""),
             })
     finally:
         con.close()
@@ -563,9 +668,15 @@ def print_attribution(result: dict) -> None:
     print(f"  供给归因（近 {result['days']} 天，price.close）：")
     for f in result["families"]:
         print(
-            f"    {f['entity_type']:6} 尝试 {f['attempts']:>6} 次 / 观测 {f['observations']:>7} 行"
+            f"    {f['entity_type']:6} 抓取 {f['attempts']:>6} 次 / 观测 {f['observations']:>7} 行"
             f" / 最新 {f['latest_observation'] or '—'} → {f['attribution']}"
         )
+        print(f"           策略 {len(f['policies'])} 条启用"
+              + (f"，open run {f['open_run_age_seconds']}s" if f["open_run_age_seconds"] else ""))
+        if f["recent_runs"]:
+            last = f["recent_runs"][0]
+            print(f"           最近 run: {last['status']} @ {last['started_at'][:19]}"
+                  + (f" — {last['detail']}" if last["detail"] else ""))
         print(f"           {f['reading']}")
 
 
@@ -622,7 +733,10 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     judge_water(rep, snap, now=now_date, max_stale_days=args.max_stale_days)
 
     attribution = (
-        attribute_supply(days=args.attribution_days) if args.attribution else None
+        attribute_supply(days=args.attribution_days,
+                         max_stale_days=args.max_stale_days,
+                         now=now_date)
+        if args.attribution else None
     )
 
     if args.json:

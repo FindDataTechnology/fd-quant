@@ -400,3 +400,66 @@ def test_old_ledger_without_gap_column_still_runs(tmp_path):
 def test_date_import_used_for_water_judgement():
     """水位判据用的是 `date`（日粒度），不是 datetime——避免边界漂移。"""
     assert isinstance(probe.dt.date.today(), date)
+
+
+# ── 供给归因：三层判定（含 2026-11-13 我自己踩过的误判）──────────────
+
+
+@pytest.mark.parametrize(
+    "attempts,observations,latest,policies,runs,open_age,expected",
+    [
+        # **我踩过的坑**：批量脚本路径不写 fetch_log ⇒ attempts=0，
+        # 但策略存在且每天在跑（只是失败）。不许判成 no_policy。
+        (0, 120182, "2026-09-18",
+         [{"id": 2659, "enabled": True}], [{"status": "failed"}], None,
+         "dispatch_failing"),
+        # 有启用策略、无失败记录、但有超期 open run ⇒ 卡死挡派发
+        (0, 120182, "2026-09-18",
+         [{"id": 2659, "enabled": True}], [], 13099, "dispatch_blocked"),
+        # 策略成功但没有新观测 ⇒ 抓到了没写进来
+        (0, 120182, "2026-09-18",
+         [{"id": 2659, "enabled": True}], [{"status": "success"}], None,
+         "zero_yield"),
+        # 真·没有策略也没有抓取 ⇒ 才是 no_policy
+        (0, 0, None, [], [], None, "no_policy"),
+        # 无策略但有抓取尝试 ⇒ 走适配器路径的判定
+        (7, 0, None, [], [], None, "fetch_failing"),
+        # 新鲜观测 ⇒ producing
+        (0, 500, "2026-11-12",
+         [{"id": 5, "enabled": True}], [{"status": "success"}], None, "producing"),
+        # 卡死优先级高于失败：两者同时成立时报 dispatch_blocked（根因更靠前）
+        (0, 0, None, [{"id": 2659, "enabled": True}],
+         [{"status": "failed"}], 99999, "dispatch_blocked"),
+        # 禁用策略不算"有策略"
+        (0, 0, None, [{"id": 2659, "enabled": False}], [], None, "no_policy"),
+    ],
+)
+def test_classify_supply(attempts, observations, latest, policies, runs, open_age, expected):
+    got = probe.classify_supply(
+        attempts=attempts, observations=observations, latest_observation=latest,
+        policies=policies, runs=runs, open_run_age_seconds=open_age,
+        now=date(2026, 11, 13), max_stale_days=7,
+    )
+    assert got == expected
+
+
+def test_classify_supply_never_says_no_policy_when_policy_exists():
+    """回归：这条断言就是"我判错过一次"的化石。
+
+    attempts=0 绝不等于"没派发"——批量路径不写 fetch_log。只要存在启用策略，
+    归因就不能是 no_policy。
+    """
+    out = probe.classify_supply(
+        attempts=0, observations=120182, latest_observation="2026-09-18",
+        policies=[{"id": 2659, "enabled": True}],
+        runs=[{"status": "failed"}, {"status": "failed"}],
+        open_run_age_seconds=None, now=date(2026, 11, 13), max_stale_days=7,
+    )
+    assert out != "no_policy"
+
+
+def test_attribution_readings_cover_every_enum_branch():
+    """每个可能返回的归因都必须有可读解释——否则输出里会出现空白的"原因"。"""
+    for kind in ("producing", "dispatch_blocked", "dispatch_failing",
+                 "zero_yield", "fetch_failing", "no_policy"):
+        assert probe.ATTRIBUTION_READINGS.get(kind)
