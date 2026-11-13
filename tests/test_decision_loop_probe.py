@@ -119,14 +119,51 @@ def codes(payload: dict) -> set[str]:
 # ── 判据 1：存在性 ───────────────────────────────────────────
 
 
-def test_empty_ledger_is_red(tmp_path):
-    """生产账本 0 行的真实形态（2026-11-13 实测）。"""
+def test_empty_ledger_is_not_started_not_failure(tmp_path):
+    """生产账本 0 行的真实形态（2026-11-13 实测）。
+
+    它必须是 `not_started`（退出码 3），**不是**失败：这条线还没有基线，
+    "停摆"与"未闭合"都无从谈起。把它判成失败，闸就常年红，最后没人再看。
+    """
     db = make_ledger(tmp_path / "empty.db", [], settlements=[])
     rc, out = run_probe("--db", str(db), "--as-of", "2026-11-13")
-    assert rc == 1
+    assert rc == 3, out
+    assert out["state"] == "not_started"
+    assert out["not_started"] is True
+    assert codes(out) == set(), "没开始不是违规——不许伪造违规码"
+    assert out["checked"]["existence"]["state"] == "not_started"
+    # 三判据都标"未判定"，不许出现空集合上的"通过"（那是空真）
+    assert out["checked"]["freshness"]["judged"] is False
+    assert out["checked"]["water_level"]["judged"] is False
+    assert out["checked"]["water_level"]["state"] == "not_applicable"
+
+
+def test_strict_turns_not_started_into_a_failure(tmp_path):
+    """需要把"没开始"当失败用的场合（本应已有真实使用的环境）：--strict。"""
+    db = make_ledger(tmp_path / "empty.db", [], settlements=[])
+    rc, out = run_probe("--db", str(db), "--as-of", "2026-11-13", "--strict")
+    assert rc == 1, out
+    assert out["state"] == "violation"
+    assert "NOT_STARTED" in codes(out)
+
+
+def test_recorded_but_never_settled_is_a_violation_not_not_started(tmp_path):
+    """边界：**有落账但一条结算都没有** → 是违规（入口在跑，结算没跑），不是"没开始"。
+
+    这一条保证 `not_started` 只在 `decisions == 0` 时成立；否则"落账了但永远不结算"
+    会被伪装成"还没开始"，而这两者的处置方向相反（一个查调度入口，一个查结算口径）。
+    """
+    db = make_ledger(
+        tmp_path / "nosettle.db",
+        [{"decision_id": "d1", "as_of": "2026-11-10", "symbol": "600519",
+          "created_at": "2026-11-10T00:00:00+00:00"}],
+        settlements=[],
+    )
+    rc, out = run_probe("--db", str(db), "--as-of", "2026-11-13")
+    assert rc == 1, out
+    assert out["state"] == "violation"
+    assert out["not_started"] is False
     assert "LOOP_NEVER_CLOSED" in codes(out)
-    assert "NO_DECISIONS_AT_ALL" in codes(out)
-    assert out["checked"]["existence"]["ok"] is False
 
 
 def test_only_insufficient_does_not_count_as_closed(tmp_path):

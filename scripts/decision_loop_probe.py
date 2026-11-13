@@ -20,7 +20,18 @@
    报 `unavailable`，**不计为通过**。
 
 只读：只发 SELECT，不建表、不写行、不落缓存、不写报告文件。全部输出走标准输出。
-退出码：0 = 零违规；1 = 有违规；2 = 跑不起来（账本不可达 / 参数非法）。
+
+退出码（四态，`--json` 里对应 `state`）：
+
+    0 = ok            四项判据通过（水位未判定时会在输出里注明）
+    1 = violation     有违规
+    2 = cannot_run    跑不起来（账本不可达 / 参数非法）
+    3 = not_started   **一条落账都没有**——不是失败，也不是通过，是还没有基线
+
+`not_started` 单独成一态，是因为它不该被塞进任何一边：当成失败，闸就常年红最后没人看；
+当成通过，那条线死了也没人知道。它还缺一层含义——**没有基线就没有"回归"可言**，
+所以存在性/新鲜度/水位三判据在无落账时全部标"未判定"而不是"通过"（空集合上的通过是空真）。
+需要把"没开始"当失败用的场合（例如本应已有真实使用的环境）加 `--strict`。
 
 用法：
 
@@ -32,8 +43,9 @@
 
 演练与生产分档（design D2）：`pack` 以 `drill:` 开头的是演练记录。默认 `--mode
 production` **排除**它们（演练数据进客户命中率就是污染），`--mode drill` 只看它们。
-P0 验收走 drill 档；production 档在第一个真实客户落账前会持续红——那是刻意的，
-它表达的是"这条线还没有真实使用"。
+P0 验收走 drill 档；production 档在第一个真实客户落账前是 `not_started`（退出码 3，
+带 `--strict` 才是 1）——那表达的是"这条线还没有真实使用"，**不是**"它坏了"。
+两者对运维是相反的指令：一个要去找调用方，一个要去修已经跑起来的东西。
 """
 from __future__ import annotations
 
@@ -81,10 +93,24 @@ class Report:
     db_path: str
     checked: dict[str, Any] = field(default_factory=dict)
     violations: list[Violation] = field(default_factory=list)
+    #: 「从未通电」：账本里一条落账都没有。它不是违规，是**还没开始**——
+    #: 没有基线就没有"回归"可言。这个状态必须与"通过"和"违规"都分开表达，
+    #: 否则要么永远红（没人再看），要么静默绿（死了也不知道）。
+    not_started: bool = False
+    not_started_reason: str = ""
 
     @property
     def ok(self) -> bool:
         return not self.violations
+
+    @property
+    def state(self) -> str:
+        """`ok` / `violation` / `not_started`——三态，不互相冒充。"""
+        if self.violations:
+            return "violation"
+        if self.not_started:
+            return "not_started"
+        return "ok"
 
     def add(self, v: Violation) -> None:
         self.violations.append(v)
@@ -92,6 +118,9 @@ class Report:
     def to_dict(self) -> dict:
         return {
             "ok": self.ok,
+            "state": self.state,
+            "not_started": self.not_started,
+            "not_started_reason": self.not_started_reason or None,
             "mode": self.mode,
             "db_path": self.db_path,
             "violation_count": len(self.violations),
@@ -213,7 +242,36 @@ def load_ledger(db_path: Path, mode: str) -> dict:
 # ── 判据 1-3：账本自身 ───────────────────────────────────────
 
 
-def judge_existence(rep: Report, snap: dict) -> None:
+def judge_existence(rep: Report, snap: dict, *, strict: bool = False) -> None:
+    # 「一条落账都没有」与「落了账但都没能定论」是两件事，处置方向相反：
+    # 前者是入口没通电（查调度与调用方），后者是结算口径缺料（查基准/价格）。
+    # 混成一个 LOOP_NEVER_CLOSED 会让值班的人分不清该修哪一头。
+    if snap["decisions"] == 0 and snap["settlements"] == 0:
+        rep.not_started = True
+        rep.not_started_reason = (
+            f"该档（mode={rep.mode}）账本一条落账都没有（decisions=0, settlements=0）"
+        )
+        rep.checked["existence"] = {
+            "ok": False,
+            "state": "not_started",
+            "decided": 0,
+            "decisions": 0,
+            "settlements": 0,
+        }
+        if strict:
+            # 严格档：把"没开始"也当失败。用于"本应已有真实使用"的场合。
+            rep.add(
+                Violation(
+                    code="NOT_STARTED",
+                    judgment="存在性",
+                    detail=rep.not_started_reason + "；--strict 下判为失败",
+                    fix=(
+                        "确认落账入口（record_decision）是否被任何岗位/技能调用；"
+                        "只有落账才会产生基线，此后停摆才可能被判为回归"
+                    ),
+                )
+            )
+        return
     if snap["decided"] > 0:
         rep.checked["existence"] = {"ok": True, "decided": snap["decided"]}
         return
@@ -246,6 +304,15 @@ def judge_existence(rep: Report, snap: dict) -> None:
 
 
 def judge_freshness(rep: Report, snap: dict, *, now: dt.datetime, days: int) -> None:
+    if rep.not_started:
+        # 没有基线，"停摆"无从谈起。硬要判就会把"还没开始"写成"已经坏了"。
+        rep.checked["freshness"] = {
+            "ok": False,
+            "judged": False,
+            "reason": "账本无任何落账，新鲜度无基线可比",
+            "days": days,
+        }
+        return
     last = snap["last_created_at"]
     if not last:
         rep.checked["freshness"] = {"ok": False, "last_created_at": None, "days": days}
@@ -396,6 +463,17 @@ def read_water_level(symbols: Sequence[str]) -> dict:
 
 
 def judge_water(rep: Report, snap: dict, *, now: dt.date, max_stale_days: int) -> None:
+    if rep.not_started:
+        # 没有落账就没有标的，水位判据在这里没有主语。空集合上"通过"是空真，
+        # 写成通过会把"没查"读成"没问题"——那正是这条判据当初要抓的东西。
+        rep.checked["water_level"] = {
+            "state": "not_applicable",
+            "judged": False,
+            "reason": "账本无落账 → 无标的可判水位",
+            "max_stale_days": max_stale_days,
+            "subjects": 0,
+        }
+        return
     water = read_water_level(snap["subjects"])
     rep.checked["water_level"] = {
         "state": water["state"],
@@ -720,6 +798,9 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
                     help="额外输出供给归因（按抓取次数 vs 产出观测数定性；需语义库）")
     ap.add_argument("--attribution-days", type=int, default=60,
                     help="供给归因窗口（天，默认 60）")
+    ap.add_argument("--strict", action="store_true",
+                    help="把「从未通电」（一条落账都没有）也判为失败。"
+                         "默认三态：ok=0 / violation=1 / cannot_run=2 / not_started=3")
     args = ap.parse_args(argv)
 
     db_path = resolve_db_path(args.db)
@@ -751,7 +832,7 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         "gap_column_present": bool(snap.get("gap_column_present", True))
     }
 
-    judge_existence(rep, snap)
+    judge_existence(rep, snap, strict=args.strict)
     judge_freshness(rep, snap, now=now_dt, days=args.days)
     judge_attribution(rep, snap)
     judge_water(rep, snap, now=now_date, max_stale_days=args.max_stale_days)
@@ -780,7 +861,16 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
             print("  [说明] 该账本还没有 gap_kinds 列（早于本 change），缺口统计已跳过")
         if attribution is not None:
             print_attribution(attribution)
-        if rep.ok:
+        if rep.not_started:
+            # 「没开始」既不是通过也不是违规：三种结论各有各的下一步动作，
+            # 混进任何一边都会让值班的人做错事（该修的没修 / 修了不该修的）。
+            print(f"  ○ 尚未通电：{rep.not_started_reason}")
+            print("    这不是失败，也不是通过——是还没有基线。判据（存在性/新鲜度/水位）"
+                  "在无落账时无从判定。")
+            print("    下一步：确认 record_decision 是否被任何岗位或技能调用；"
+                  "落账一笔之后本探针才开始能判「停摆」与「未闭合」。")
+            print("    机读：state=not_started（退出码 3）；--strict 可当失败处理。")
+        elif rep.ok:
             # 判据全绿也不许夸大：水位未判定时明说，否则"没查"会被读成"查过没问题"。
             tail = (
                 "（水位未判定，见上）"
@@ -791,7 +881,11 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         else:
             for v in rep.violations:
                 print("  ✗ " + v.line())
-    return 0 if rep.ok else 1
+    if rep.violations:
+        return 1
+    if rep.not_started:
+        return 3
+    return 0
 
 
 if __name__ == "__main__":

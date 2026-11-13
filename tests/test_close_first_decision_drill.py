@@ -109,7 +109,12 @@ def test_drill_records_are_not_visible_to_client_caller(tmp_path):
 
 
 def test_probe_production_mode_ignores_drill(tmp_path):
-    """探针 production 档不把演练算作闭合——这是 P0 双层判据的另一半。"""
+    """探针 production 档不把演练算作闭合——这是 P0 双层判据的另一半。
+
+    只有演练记录时，production 档看到的是"一条真实落账都没有"，即 `not_started`
+    （退出码 3）。判据要的是"绝不判为通过"，别把编码钉死在某一个非零值上——
+    否则下次改状态机就要改这个测试，而它想守的其实是"演练不进生产"这一件事。
+    """
     db = tmp_path / "pp.db"
     run_drill("--db", str(db))
 
@@ -120,9 +125,10 @@ def test_probe_production_mode_ignores_drill(tmp_path):
     with redirect_stdout(buf):
         rc = probe.run(["--db", str(db), "--as-of", "2026-11-13", "--json"])
     out = json.loads(buf.getvalue())
-    assert rc == 1
+    assert rc != 0 and out["state"] != "ok", out
     assert out["mode"] == "production"
-    assert any(v["code"] == "LOOP_NEVER_CLOSED" for v in out["violations"])
+    assert out["checked"]["existence"].get("decided", 0) == 0
+    assert out["state"] == "not_started"
 
 
 # ── 3.4 演练档三条判据全绿 ──────────────────────────────────
