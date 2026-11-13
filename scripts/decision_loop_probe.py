@@ -495,9 +495,33 @@ ATTRIBUTION_READINGS = {
     "no_policy": "无启用策略且无抓取尝试 → 该概念族确实从未纳入派发",
 }
 
-#: open run 超过这个时长即视为卡死。与派发侧 Job 的 `activeDeadlineSeconds`（3h）对齐：
-#: Job 早被杀了而行还写着 running，就是"行没关"，不是"还在跑"。
-OPEN_RUN_STUCK_SECONDS = 3 * 3600
+#: 派发侧执行器自身的运行上限（与 `fd-open-data-mcp` 的 `SCRAW_JOB_ACTIVE_DEADLINE_SECONDS`
+#: 同一个键），加一个 reconciler 跳间容差。**从同一个键派生，不另写数字**：
+#: 两份阈值一旦漂移，要么"Job 还活着、行被判卡死"（双跑），要么"Job 早死了、行永不关"。
+JOB_DEADLINE_ENV = "SCRAW_JOB_ACTIVE_DEADLINE_SECONDS"
+DEFAULT_JOB_DEADLINE_SECONDS = 10800          # = 3h；执行侧注释写明约 1.9x 最长正常跑批
+RECONCILER_TICK_SECONDS = 15 * 60
+
+
+def open_run_stuck_seconds() -> int:
+    """open run 超过这个时长即视为卡死：执行侧上限 + 一跳。
+
+    症状不是宕机而是停更：Job 被 activeDeadlineSeconds 杀掉、随后被 ttl 回收，
+    `poll()` 从此只会返回 "unknown"，行永远不关，而派发是单飞的——
+    一条悬着的行等于这条策略永久停更（2026-11-13 实历，run id=2383 卡 3.6h）。
+    """
+    raw = (os.environ.get(JOB_DEADLINE_ENV) or "").strip()
+    try:
+        deadline = int(raw) if raw else DEFAULT_JOB_DEADLINE_SECONDS
+    except ValueError:
+        deadline = DEFAULT_JOB_DEADLINE_SECONDS
+    if deadline <= 0:
+        deadline = DEFAULT_JOB_DEADLINE_SECONDS
+    return deadline + RECONCILER_TICK_SECONDS
+
+
+#: 兼容旧引用（测试与调用方按常量读）。真正的判定走 `open_run_stuck_seconds()`。
+OPEN_RUN_STUCK_SECONDS = DEFAULT_JOB_DEADLINE_SECONDS + RECONCILER_TICK_SECONDS
 
 
 def classify_supply(
@@ -522,7 +546,7 @@ def classify_supply(
             return "fetch_failing" if observations == 0 else "producing"
         return "no_policy"
 
-    if open_run_age_seconds is not None and open_run_age_seconds > OPEN_RUN_STUCK_SECONDS:
+    if open_run_age_seconds is not None and open_run_age_seconds > open_run_stuck_seconds():
         return "dispatch_blocked"
 
     recent = list(runs)[:5]

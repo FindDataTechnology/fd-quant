@@ -463,3 +463,45 @@ def test_attribution_readings_cover_every_enum_branch():
     for kind in ("producing", "dispatch_blocked", "dispatch_failing",
                  "zero_yield", "fetch_failing", "no_policy"):
         assert probe.ATTRIBUTION_READINGS.get(kind)
+
+
+# ── 卡死阈值派生（unblock-silent-dispatch-stalls task 4.1）──────────────
+
+
+def test_stuck_threshold_derives_from_executor_deadline(monkeypatch):
+    """阈值必须**派生**自执行侧那个 env，不另写一个数字。
+
+    两份阈值一旦漂移：①判定比执行侧紧 → Job 还活着、行已判卡死 ⇒ 双跑；
+    ②判定比执行侧松（或不判）→ Job 早死了、行永不关 ⇒ 就是那条策略永久停更的缺陷。
+    """
+    monkeypatch.delenv(probe.JOB_DEADLINE_ENV, raising=False)
+    assert probe.open_run_stuck_seconds() == (
+        probe.DEFAULT_JOB_DEADLINE_SECONDS + probe.RECONCILER_TICK_SECONDS
+    )
+    monkeypatch.setenv(probe.JOB_DEADLINE_ENV, "600")
+    assert probe.open_run_stuck_seconds() == 600 + probe.RECONCILER_TICK_SECONDS
+
+
+def test_stuck_threshold_survives_garbage_env(monkeypatch):
+    """env 写坏不许把判据变成 0（那会让每一条 open run 立刻被判卡死）。"""
+    for bad in ("abc", "0", "-5", ""):
+        monkeypatch.setenv(probe.JOB_DEADLINE_ENV, bad)
+        assert probe.open_run_stuck_seconds() == (
+            probe.DEFAULT_JOB_DEADLINE_SECONDS + probe.RECONCILER_TICK_SECONDS
+        ), f"env={bad!r} 时阈值必须回落到默认"
+
+
+def test_classify_uses_the_derived_threshold(monkeypatch):
+    """classify_supply 必须走派生函数，而不是某个常量快照。
+
+    把执行侧上限调到很小 → 同一个 open run 年龄应从"未超龄"翻成 dispatch_blocked。
+    """
+    kwargs = dict(
+        attempts=0, observations=0, latest_observation=None,
+        policies=[{"id": 2659, "enabled": True}], runs=[],
+        open_run_age_seconds=1200, now=date(2026, 11, 13), max_stale_days=7,
+    )
+    monkeypatch.delenv(probe.JOB_DEADLINE_ENV, raising=False)
+    assert probe.classify_supply(**kwargs) != "dispatch_blocked", "20min 远未超龄"
+    monkeypatch.setenv(probe.JOB_DEADLINE_ENV, "60")
+    assert probe.classify_supply(**kwargs) == "dispatch_blocked", "上限 60s+900s 后 20min 已超龄"
