@@ -32,8 +32,18 @@ class SettlementRefused(LedgerError):
     """结算被拒（结算窗覆盖不足 / 入场日不在序列里 / 端点价格缺失）。
 
     `missing_trading_days` 让调用方不必解析文本就能知道要继续取多少天数据。
+    `gap_kinds` 是缺口归类（`benchmark_series` / `price_watermark` /
+    `metric_observation`，逗号分隔）：被拒时**必须**说清该去补哪一路，
+    否则调用方只知道"结不了"，会拿着同一份数据原地重试。
     """
 
-    def __init__(self, message: str, *, missing_trading_days: Optional[int] = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        missing_trading_days: Optional[int] = None,
+        gap_kinds: Optional[str] = None,
+    ):
         super().__init__(message)
         self.missing_trading_days = missing_trading_days
+        self.gap_kinds = gap_kinds

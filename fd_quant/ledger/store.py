@@ -189,11 +189,23 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         threshold             REAL,
         series_fingerprint    TEXT,
         reflection            TEXT,
+        -- 缺口点名（close-first-decision-loop）：`insufficient_data` 必须说清缺的是哪一路，
+        -- 否则复盘只看到"结不出来"，看不到"该去补什么"。封闭枚举、逗号分隔：
+        -- benchmark_series（基准序列零观测）/ price_watermark（价格水位过旧）/
+        -- metric_observation（指标观测缺失）。
+        gap_kinds             TEXT,
         -- 两种口径各自要求的字段必须齐；不许"都没有"。
         CHECK (
             (rule_id = 'alpha_vs_benchmark' AND alpha IS NOT NULL AND benchmark_symbol IS NOT NULL)
             OR
             (rule_id = 'metric_threshold' AND metric_ref IS NOT NULL AND verdict IS NOT NULL)
+        ),
+        -- 缺口与结论互斥：没定论才点名缺什么，定了论就不许留缺口。
+        -- 这条把「有缺口却记了 hit」变成库层不可能出现的半态。
+        CHECK (
+            (verdict = 'insufficient_data' AND gap_kinds IS NOT NULL AND gap_kinds <> '')
+            OR
+            (verdict <> 'insufficient_data' AND gap_kinds IS NULL)
         )
     )
     """,
@@ -318,7 +330,7 @@ def _merge_settlement(decision_row: Any, settlement_row: Any) -> _Merged:
                 "exit_price", "raw_return", "benchmark_symbol", "benchmark_mapping",
                 "benchmark_return", "alpha", "holding_days", "metric_ref",
                 "observed_value", "comparator", "threshold", "series_fingerprint",
-                "reflection"):
+                "reflection", "gap_kinds"):
         merged[f"s_{key}"] = settlement_row[key]
     return _Merged(merged)
 
@@ -349,6 +361,22 @@ def build_premise_invalidated_event(
         "evaluated_at": evaluated_at,
         "series_fingerprint": series_fingerprint,
     }
+
+
+def _has_usable_prices(values: Sequence[Any]) -> bool:
+    """序列里是否至少有一个可用价格（非 None 且为正）。
+
+    只用于**缺口归类**：拒绝结算时判断"缺的是基准那一路"还是"标的价格那一路"，
+    两者要补的数据完全不同。不参与结算算术——结算的严格校验在 `settlement_window`。
+    """
+    for v in values:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(f) and f > 0:
+            return True
+    return False
 
 
 def _compare(observed: float, comparator: str, threshold: float) -> bool:
@@ -508,6 +536,44 @@ def _migrate_to_series_ref(con: sqlite3.Connection) -> None:
     con.execute("ALTER TABLE decisions ADD COLUMN series_ref TEXT")
 
 
+def _migrate_to_gap_kinds(con: sqlite3.Connection) -> None:
+    """给既有库补 `gap_kinds` 列及其互斥约束（close-first-decision-loop）。
+
+    **为什么这里必须重建表、不能 `ALTER TABLE ADD COLUMN`**：新列不是"随便加一列"，
+    它带着一条表级 CHECK（`verdict='insufficient_data'` ⇔ `gap_kinds` 非空）。
+    SQLite 无法给已存在的表追加 CHECK，只能按新 schema 建表再搬行——与
+    `_migrate_to_decision_v2` 同一手法。若只 ALTER 加列而丢掉 CHECK，"有缺口却记了
+    hit"这种半态就重新变成可写入的，而那正是本列存在的理由。
+
+    既有行一律 `gap_kinds = NULL`：它们产生于"缺口还没有名字"的时期，且按上面的
+    CHECK，非 insufficient_data 的结论本来就该留空。真实库当前 0 行，回填成本为零；
+    即便有历史行，语义也不变（那时的 insufficient_data 行没有缺口信息，NULL 是事实）。
+
+    幂等：列已在就返回；新库由建表语句直接带该列，此步为空操作。
+    """
+    scols = {r[1] for r in con.execute("PRAGMA table_info(settlements)")}
+    if not scols or "gap_kinds" in scols:
+        return
+    con.execute("ALTER TABLE settlements RENAME TO settlements_old_gap")
+    for stmt in SCHEMA_STATEMENTS:
+        if "CREATE TABLE IF NOT EXISTS settlements" in stmt or " ON settlements" in stmt:
+            con.execute(stmt)
+    con.execute(
+        "INSERT INTO settlements (decision_id, settled_at, settlement_date, rule_id,"
+        " verdict, entry_price, exit_price, raw_return, benchmark_symbol,"
+        " benchmark_mapping, benchmark_entry_price, benchmark_exit_price,"
+        " benchmark_return, alpha, holding_days, metric_ref, observed_value,"
+        " comparator, threshold, series_fingerprint, reflection, gap_kinds)"
+        " SELECT decision_id, settled_at, settlement_date, rule_id, verdict, entry_price,"
+        " exit_price, raw_return, benchmark_symbol, benchmark_mapping,"
+        " benchmark_entry_price, benchmark_exit_price, benchmark_return, alpha,"
+        " holding_days, metric_ref, observed_value, comparator, threshold,"
+        " series_fingerprint, reflection, NULL"
+        " FROM settlements_old_gap"
+    )
+    con.execute("DROP TABLE settlements_old_gap")
+
+
 class LedgerStore:
     """决策账本：追加式记录（幂等 + 修订）+ 到期结算 + 点内检索 + 聚合。
 
@@ -563,6 +629,9 @@ class LedgerStore:
             _migrate_to_portfolio(con)
             _migrate_to_series_ref(con)
             _migrate_to_decision_v2(con)
+            # 必须在 decision_v2 之后：那条迁移在旧库上会按新 schema 重建 settlements，
+            # 而新 schema 已含 gap_kinds；先跑本步会让重建把刚加的列再搬一遍。
+            _migrate_to_gap_kinds(con)
             for stmt in SCHEMA_STATEMENTS:
                 con.execute(stmt)
             con.execute("COMMIT")
@@ -817,16 +886,28 @@ class LedgerStore:
             bench = resolve_benchmark(
                 row["symbol"], explicit=benchmark_symbol, mapping=self.benchmark_map
             )
-            window = settlement_window(
-                entry_date=row["as_of"],
-                symbol_dates=symbol_dates,
-                symbol_values=symbol_prices,
-                benchmark_dates=benchmark_dates,
-                benchmark_values=benchmark_prices,
-                as_of=a,
-                holding_days=hd,
-                benchmark_symbol=bench["benchmark_symbol"],
-            )
+            try:
+                window = settlement_window(
+                    entry_date=row["as_of"],
+                    symbol_dates=symbol_dates,
+                    symbol_values=symbol_prices,
+                    benchmark_dates=benchmark_dates,
+                    benchmark_values=benchmark_prices,
+                    as_of=a,
+                    holding_days=hd,
+                    benchmark_symbol=bench["benchmark_symbol"],
+                )
+            except SettlementRefused as exc:
+                # 拒绝落行是对的（半窗 alpha 比没有 alpha 更坏），但"拒绝"必须说清
+                # **该去补哪一路**——否则调用方只知道"结不了"，会原地重试。
+                # 缺口归类只在这一刻做：基准整条序列没有可用价 ⇒ 缺基准；否则 ⇒ 缺标的价。
+                gap = ("benchmark_series" if not _has_usable_prices(benchmark_prices)
+                       else "price_watermark")
+                raise SettlementRefused(
+                    f"{exc}；缺口={gap}",
+                    missing_trading_days=getattr(exc, "missing_trading_days", None),
+                    gap_kinds=gap,
+                ) from exc
             # verdict 由 alpha 推导。这是**判定**，不是状态字段：alpha>0 记 hit，
             # 反之为 miss；alpha 恰为 0 记 miss（不算赢，与 summarize 的口径一致）。
             verdict = "hit" if window["alpha"] > 0 else "miss"
@@ -925,14 +1006,17 @@ class LedgerStore:
                 verdict = "insufficient_data"
                 observed = None
                 reason = "insufficient_data"
+                gap_kinds = "metric_observation"
             else:
                 observed = in_window[-1][1] if in_window[-1][1] is not None else None
                 if observed is None:
                     verdict = "insufficient_data"
                     reason = "insufficient_data"
+                    gap_kinds = "metric_observation"
                 else:
                     verdict = "hit" if _compare(observed, comparator, thr) else "miss"
                     reason = "settled"
+                    gap_kinds = None
 
             # metric_ref 的真源是决策 payload 的 expected_outcome.metric_ref。
             # 此前用 subject 兜底：subject 是"判断的对象"（门店），metric_ref 是
@@ -950,11 +1034,11 @@ class LedgerStore:
             con.execute(
                 "INSERT INTO settlements (decision_id, settled_at, settlement_date, rule_id, "
                 "verdict, metric_ref, observed_value, comparator, threshold, "
-                "series_fingerprint, reflection)"
-                " VALUES (?, ?, ?, 'metric_threshold', ?, ?, ?, ?, ?, ?, ?)",
+                "series_fingerprint, reflection, gap_kinds)"
+                " VALUES (?, ?, ?, 'metric_threshold', ?, ?, ?, ?, ?, ?, ?, ?)",
                 (did, settled_at, end, verdict,
                  metric_ref, observed, comparator, thr,
-                 fingerprint, reflection),
+                 fingerprint, reflection, gap_kinds),
             )
             con.execute("UPDATE decisions SET status = 'settled' WHERE decision_id = ?", (did,))
             stored = self._settlement_row(con, did)
@@ -1144,7 +1228,8 @@ class LedgerStore:
             "s.alpha AS s_alpha, s.holding_days AS s_holding_days, s.reflection AS s_reflection, "
             "s.rule_id AS s_rule_id, s.verdict AS s_verdict, s.metric_ref AS s_metric_ref, "
             "s.observed_value AS s_observed_value, s.comparator AS s_comparator, "
-            "s.threshold AS s_threshold, s.series_fingerprint AS s_series_fingerprint "
+            "s.threshold AS s_threshold, s.series_fingerprint AS s_series_fingerprint, "
+            "s.gap_kinds AS s_gap_kinds "
             "FROM decisions d JOIN settlements s ON s.decision_id = d.decision_id "
             f"WHERE {' AND '.join(where)} "
         )
@@ -1484,6 +1569,7 @@ class LedgerStore:
                 "threshold": _clean_float_or_none(row["s_threshold"], name="threshold"),
                 "series_fingerprint": row["s_series_fingerprint"],
                 "reflection": row["s_reflection"],
+                "gap_kinds": row["s_gap_kinds"],
             }
         return {
             "decision_id": row["decision_id"],
@@ -1568,6 +1654,7 @@ class LedgerStore:
             "threshold": _clean_float_or_none(row["threshold"], name="threshold"),
             "series_fingerprint": row["series_fingerprint"],
             "reflection": row["reflection"],
+            "gap_kinds": row["gap_kinds"],
             "reflection_ignored": bool(reflection_ignored),
             "counts": self._counts(con),
         }
@@ -1633,12 +1720,12 @@ class LedgerStore:
         # 独立的表且恒为价格口径，故补常量 'alpha_vs_benchmark'（它没有 verdict 概念）。
         rows = con.execute(
             "SELECT d.pack, d.skill, d.record_kind, s.holding_days, s.raw_return, s.alpha, "
-            "s.rule_id AS rule_id, s.verdict AS verdict "
+            "s.rule_id AS rule_id, s.verdict AS verdict, s.gap_kinds AS gap_kinds "
             "FROM decisions d JOIN settlements s ON s.decision_id = d.decision_id "
             "WHERE d.status = 'settled' AND s.settlement_date <= ? AND d.caller = ? "
             "UNION ALL "
             "SELECT d.pack, d.skill, d.record_kind, p.holding_days, p.raw_return, p.alpha, "
-            "'alpha_vs_benchmark' AS rule_id, NULL AS verdict "
+            "'alpha_vs_benchmark' AS rule_id, NULL AS verdict, NULL AS gap_kinds "
             "FROM decisions d JOIN portfolio_settlements p ON p.decision_id = d.decision_id "
             "WHERE d.status = 'settled' AND p.settlement_date <= ? AND d.caller = ?",
             (as_of, caller, as_of, caller),
@@ -1655,9 +1742,27 @@ class LedgerStore:
                 "alpha": _clean_float_or_none(r["alpha"], name="alpha"),
                 "rule_id": r["rule_id"],
                 "verdict": r["verdict"],
+                "gap_kinds": r["gap_kinds"],
             }
             for r in rows
         ]
+
+    @staticmethod
+    def _gap_breakdown(rows: list[dict]) -> dict:
+        """按缺口归类计数：回答"结不出来的那些，缺的是哪一路"。
+
+        `insufficient_data` 只说明"没定论"，没说明"该去补什么"。三路缺口的处置
+        完全不同（补基准序列 / 推价格水位 / 补指标观测），混成一个数就没法行动。
+        只在真的出现过该缺口时出现在结果里——不预先铺三个 0，那会让"没缺"和"缺过"
+        在结果里同形。
+        """
+        out: dict[str, int] = {}
+        for r in rows:
+            raw = r.get("gap_kinds") or ""
+            for kind in (k.strip() for k in raw.split(",")):
+                if kind:
+                    out[kind] = out.get(kind, 0) + 1
+        return out
 
     @staticmethod
     def _rule_breakdown(rows: list[dict]) -> dict:
@@ -1712,7 +1817,8 @@ class LedgerStore:
         if not sel:
             # 空组：显式 0 + null 比值（"没有样本"既不是"不存在"，也不是"胜率 0"）
             out.update({"wins": 0, "alpha_samples": 0, "mean_alpha": None,
-                        "win_rate": None, "mean_raw_return": None, "by_rule": {}})
+                        "win_rate": None, "mean_raw_return": None, "by_rule": {},
+                        "gaps": {}})
             return out
 
         # 只有 alpha 口径的行才能进"胜率 / 平均 alpha"。阈值口径的结算没有 alpha，
@@ -1731,6 +1837,7 @@ class LedgerStore:
             "win_rate": (wins / len(alphas)) if alphas else None,
             "mean_raw_return": _mean(raws) if raws else None,
             "by_rule": LedgerStore._rule_breakdown(sel),
+            "gaps": LedgerStore._gap_breakdown(sel),
         })
         return out
 
