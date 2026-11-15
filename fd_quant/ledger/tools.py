@@ -68,10 +68,11 @@ def record_decision(
 ) -> dict:
     """追加一条决策记录到本地账本（幂等键 caller + as_of + symbol + pack + skill）。
 
-    落账即审计：`payload` 是契约实例（`Rating` JSON 对象，字段同 schemas/rating.schema.json），
-    账本原样存下并在查回时逐字给予；`payload.as_of` 必须等于 `as_of`、`payload.subject`
-    必须等于 `symbol`、`payload.producer.pack/skill` 必须等于 `pack`/`skill`（不一致即拒绝
-    并同时点名两边——账本不替调用方挑一个当真）。
+    落账即审计：`payload` 是契约实例（`Rating` JSON 对象，形状**逐字段写在下方「payload 形状」
+    一节里**——不是指向某个文件，调用方读不到那个文件），账本原样存下并在查回时逐字给予；
+    `payload.as_of` 必须等于 `as_of`、`payload.subject` 必须等于 `symbol`、
+    `payload.producer.pack/skill` 必须等于 `pack`/`skill`（不一致即拒绝并同时点名两边——
+    账本不替调用方挑一个当真）。
 
     调用者隔离：`caller` **不是入参**——它由调用上下文解析（HTTP 用 Authorization 的
     Bearer 指纹，stdio 用环境变量 FD_QUANT_CALLER，都没有则是 anonymous）。故调用方
@@ -88,6 +89,39 @@ def record_decision(
     symbol + Rating。主体字段与种类必须一致（同时给或同时缺都被拒绝）。幂等键因此是
     (caller, record_kind, as_of, subject_key, pack, skill)，subject_key 单体取 symbol、
     组合取 portfolio_key——同一 as_of 下两者互不覆盖。
+
+    payload 形状（**严格**：多一个键即 `unknown field` 整份拒收；少一个必填即
+    `required field missing`。白名单恰好这 11 个字段）：
+
+        {
+          "schema_version": "1",
+          "as_of": "2026-11-13",
+          "subject": "600519.SS",
+          "side": "buy",
+          "conviction": 0.6,
+          "price_target": null,
+          "target_evidence_ids": [],
+          "basis": "一句话理由（必填，非空）",
+          "time_horizon": "3M",
+          "evidence": [],
+          "producer": {"pack": "投研晨会", "skill": "invest-decision-log"}
+        }
+
+    * `schema_version` 必须是**字符串** `"1"`——不是数字 `1`，不是 `"1.0"`，不是省略。
+    * `side` ∈ `strong_buy` / `buy` / `hold` / `sell` / `strong_sell` / `review`；
+      `side="review"` 时 `price_target` 与 `conviction` **必须为 null**（review 表示不作判断）。
+    * `conviction` 是 `[0, 1]` 的数或 null；`price_target` 是数或 null；
+      给了 `price_target` 就必须给**非空** `target_evidence_ids`（数字要有出处）。
+    * `evidence` 是**对象数组**，每个对象**恰好**这 6 个键：
+      `evidence_id` / `label` / `value` / `unit` / `as_of` / `source`（全部必填；
+      写 `{"quote": ...}` 会被判 `evidence[0].quote: unknown field`），且 `evidence_id` 不重复。
+    * `producer` = `{"pack": ..., "skill": ...}`（必填，须与本工具的 `pack`/`skill` 入参逐字一致），
+      可带 `run_id`。
+    * 加了 `action` / `reasoning` / `confidence` 之类的键都会被整份拒收——**不要自创字段**。
+
+    常见拒收（都带 `field`，认准了改那一个就行）：`schema_version` 写成 `1`/`"1.0"`；
+    `conviction` 给了百分数（`60`）或字符串；`evidence` 里塞了 `quote`/`url`；
+    `side` 用了 `"buy_strong"`/`"hold_watch"` 之类自造值。
 
     Input: as_of (ISO 日期, 必填; 也是幂等键的一部分), symbol (标的，如 600519.SS；组合记录不传),
       pack / skill (产出方标识，必须与 payload.producer 一致), payload (Rating 契约对象, 必填),
