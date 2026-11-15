@@ -14,7 +14,8 @@
 本脚本把"机制链"钉住，实跑那一步只需在实化后看产出。
 
 用法：
-    PYTHONPATH=. python3 scripts/verify_executor_gate_chain.py [--seed PATH]
+    python3 scripts/verify_executor_gate_chain.py [--seed PATH]
+    （从仓内任何目录、或从工作区根跑都行——脚本自己把 fd-quant 塞进 sys.path）
 退出码：0 = 三段全绿；1 = 有段落不成立（逐段打印原因）；2 = 种子读不到（跑不完整）
 """
 from __future__ import annotations
@@ -27,6 +28,15 @@ import sys
 DEFAULT_SEED = pathlib.Path(__file__).resolve().parents[2] / (
     "paas/docs/fleet-templates/invest-trading-fleet.seed.json"
 )
+
+# 让 docstring 里那条命令在**任何工作目录**下都成立：脚本自己把仓根塞进 sys.path。
+# 否则 `python3 fd-quant/scripts/verify_executor_gate_chain.py`（从工作区根跑）会得到
+# `ModuleNotFoundError: No module named 'fd_quant'`，而 ①② 两段把它打印成
+# 「机制链有断口，实跑前必须先修」——那是**环境**问题冒充**机制**问题，
+# 与「闸自己崩掉被读成集群坏了」同族（2026-11-16 实历）。
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 
 def _gate_refuses_when_a_threshold_is_missing() -> list[str]:
