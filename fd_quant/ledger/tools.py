@@ -212,6 +212,28 @@ def settle_decision(
       (基准序列，同形状), as_of (ISO 日期，必填：结算口径日期，晚于它的价格点被拒),
       db_path (可选；缺省取环境变量 FD_QUANT_LEDGER_DB，再缺省为工作目录 fd_quant_ledger.db),
       reflection (可选字符串；只在首次结算可写入),
+    调用范例（把 `<decision_id>` 换成 `list_pending_decisions` 里那条的 id；两条序列给**完整窗**）：
+
+        settle_decision(
+            decision_id="<decision_id>",
+            as_of="2026-11-20",                      # 结算口径日：不得含晚于它的价格点
+            symbol_dates     =["2026-11-13","2026-11-16","2026-11-17","2026-11-18","2026-11-19","2026-11-20"],
+            symbol_prices    =[10.00,        10.20,        10.15,        10.40,        10.55,        10.80],
+            benchmark_dates  =["2026-11-13","2026-11-16","2026-11-17","2026-11-18","2026-11-19","2026-11-20"],
+            benchmark_prices =[3800.0,       3812.0,       3805.0,       3820.0,       3828.0,       3841.0],
+            benchmark_symbol="000300.SH",
+            holding_days=5,
+        )
+
+    三个最容易踩的（都只花一次调用就能避免）：
+
+    * **只给入场日与出场日两个点 ⇒ 被拒**：`holding period not covered … missing 4 trading days`，
+      状态保持 `pending`、一行不落。序列要给**从决策的 `as_of`（入场日）起、至少
+      `holding_days + 1` 个对齐交易日**；范例是 6 个点、`holding_days=5`。
+    * **日期轴是两条序列的交集**：任何一边缺一天，窗口就少一天。基准与标的必须覆盖**同一批**交易日。
+    * **`as_of` 是结算口径日，不是入场日**：入场日取自决策自己存的 `as_of`；价格序列里
+      出现晚于结算口径日的点会被拒（`future data refused`），不静默截断。
+
       benchmark_symbol (可选：显式基准代码，优先于后缀映射), holding_days (可选正整数，
       默认 5 个交易日), now (可选 ISO 时间戳，仅用于可复现测试)。
     Returns: tool / as_of / db_path / result（result 含 created、reason、decision_id、
