@@ -103,9 +103,19 @@ FD_OPEN_DATA_DSN=postgresql://... python scripts/decision_loop_probe.py --attrib
 
 ```sql
 -- 层 1：哪些策略在派发这个概念族
+-- ⚠ `crawl_policies.concept_ids` 是 **jsonb**，不是数组（2026-11-15 实测活库）：
+--   `&& ARRAY[...]::text[]` 报 `operator does not exist: jsonb && text[]` —— 本文件
+--   早先版本就这么写，照抄必失败。`?|`/`?` 只匹配字符串元素（对数字数组恒假）；
+--   `@>` 是"全都包含"而非"任一命中"。只有摊成文本逐元素比才对，且不做数值强转
+--   （脏元素会让 `::bigint` 把整条查询打崩，文本比对只是不命中）。
 SELECT id, name, cron_expr, enabled, concept_ids
 FROM crawl_policies
-WHERE enabled AND concept_ids && ARRAY['233','234','235','236','238']::text[];
+WHERE enabled
+  AND jsonb_typeof(concept_ids) = 'array'
+  AND EXISTS (
+        SELECT 1 FROM jsonb_array_elements_text(concept_ids) AS elem
+         WHERE elem.value = ANY(ARRAY['233','234','235','236','238']::text[])
+      );
 
 -- 层 2：这些策略跑成什么样（含卡死的 open run）
 SELECT id, policy_id, status, started_at, finished_at, detail,
@@ -128,3 +138,62 @@ JOIN concepts c ON c.id = o.concept_id
 JOIN entities e ON e.id = o.entity_id AND e.entity_type = o.entity_type
 WHERE c.code = 'price.close' AND c.entity_type = 'fund';
 ```
+
+---
+
+## 2026-11-15 复核：dispatch 已解锁，归因翻到 dispatch_failing
+
+> 本段由 `unblock-silent-dispatch-stalls` task 4.3/4.4 复核产出。修复
+> `fd-open-data-mcp cc8607e`（回收器悬行自愈 + 跳过留痕）**已在役**
+> （`xinru/fd-master/crawl-reconciler`，镜像 `scraw-fd-open-data-mcp:sha-2f2ccd2`，
+> 2026-11-14T04:27Z 滚上；每轮 summary 里能看到 `stalled`/`skipped` 两个键）。
+
+### 当次输出（`decision_loop_probe.py --attribution`，60 天窗口，fd-prod 语义库）
+
+```
+  供给归因（近 60 天，price.close）：
+    stock  抓取      0 次 / 观测  120182 行 / 最新 2026-09-18 → dispatch_failing
+           策略 1 条启用
+           最近 run: stalled @ 2026-11-14 04:52:04 — stalled (manual repair 2026-11-14):
+             东财对 cheap9 出口 IP 限流，本轮 3 票连续被拒后人工停手，避免继续延长封禁；Job 已删。
+           有启用策略且在派发，但近期 run 全部失败 → 看 policy_runs.detail 的失败原因
+    fund   抓取  24086 次 / 观测    4105 行 / 最新 2026-11-13 → producing
+           策略 2 条启用，open run 4823s
+           最近 run: running @ 2026-11-15 07:07:03
+           近端有新观测 → 供给正常
+    index  抓取      0 次 / 观测       0 行 / 最新 — → no_policy
+           策略 0 条启用
+           无启用策略且无抓取尝试 → 该概念族确实从未纳入派发
+```
+
+**stock 族不再是 `dispatch_blocked`**（上文"修复方向"第 1 条的目标达成）：卡死行
+2383 已关，此刻全库也没有超龄 open run（两条 running 是 fund 策略正在真跑的行，
+Job 在 cheap9 上活着）。归因落回**失败**这一档：近 5 次运行
+`[stalled, stalled, failed, failed, failed]`，根因仍是 eastmoney 出口 IP 封禁——
+与"修复方向"第 2 条一致，处置判据在 `docs/ops/astock-daily-ingest-rate-limit.md`。
+
+### 这次复核顺带修了探针的两个判据（都在 fd-quant 本仓）
+
+1. **归因 SQL 与真实列类型不符**：`crawl_policies.concept_ids` 是 **jsonb**（实测
+   `information_schema` 给 `jsonb`，元素是数字）。旧 SQL `concept_ids && %s::text[]`
+   在活库直接 500 ⇒ **`--attribution` 在生产上一次都没跑通过**。`?|`/`?` 只匹配
+   字符串元素（对 `[378,379]` 返回 false，实测）；`@>` 是"全包含"不是"任一命中"。
+   修法 = `jsonb_array_elements_text` 摊平后按**文本**比对（不做数值强转——脏元素
+   会让 `::bigint` 崩掉整条归因）。回归：`tests/test_decision_loop_probe.py::
+   test_policy_concept_match_targets_jsonb_not_array` / `..._never_casts_elements`。
+2. **新状态没进判据词表**：`stalled` 不算失败 ⇒ "近 5 次全失败"判不出来，stock 落到
+   `zero_yield`，读出「策略在跑且报成功」——对一个连续失败/卡死多日的族是**说反话**；
+   `skipped`（单飞跳过的记录）会占满运行窗口，把"连续 5 跳被挡住"读成"跑了 5 次"。
+   修法 = `FAILED_RUN_STATUSES = ("failed","stalled")`、`NON_RUN_STATUSES = ("skipped",)`
+   且 `recent` 窗口先过滤再切片。回归：`..._stalled_runs_count_as_dispatch_failure` /
+   `..._skipped_rows_do_not_fill_the_run_window`（配 `..._producing_is_not_over_corrected`
+   成对防过修）。红证：四条新断言对修复前代码 4 红 / 修复后全绿。
+
+### 4.3 的剩余部分（显式留在这里，不装绿）
+
+`astock-daily-increment`（policy 2659，`17 18 * * 1-5` CST）的下一次**计划内**派发是
+**2026-11-16（周一）10:22Z ≈ 18:22 CST**（reconciler 的 `:22` tick）。复核当天是周日，
+没有任何一条策略的自然 tick 能旁证"被挡后重新派发"——这条验收只能等周一那一跳，
+判据仍是 tasks.md 4.3 的原文（`policy_runs` 出现当跳新行，且若有 `skipped` 行须能
+说明被谁挡住）。修复自 11-14T04:27Z 在役至今，回收器在真实派发上还没有过一次
+自动触发（库里两条 `stalled` 都是人工关的）。

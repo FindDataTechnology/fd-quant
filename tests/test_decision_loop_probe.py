@@ -542,3 +542,72 @@ def test_classify_uses_the_derived_threshold(monkeypatch):
     assert probe.classify_supply(**kwargs) != "dispatch_blocked", "20min 远未超龄"
     monkeypatch.setenv(probe.JOB_DEADLINE_ENV, "60")
     assert probe.classify_supply(**kwargs) == "dispatch_blocked", "上限 60s+900s 后 20min 已超龄"
+
+
+# ── 归因 SQL 必须与库里的真实类型相符（unblock-silent-dispatch-stalls task 4.4）──
+
+
+def test_policy_concept_match_targets_jsonb_not_array():
+    """`crawl_policies.concept_ids` 在库里是 **jsonb**（实测 2026-11-15）。
+
+    旧写法 `concept_ids && %s::text[]` 在活库上直接报
+    `operator does not exist: jsonb && text[]` ⇒ `--attribution` 一次都没跑通过。
+    这条断言把修法钉在 SQL 形态上：换成数组运算（`&&`）立刻红。
+    """
+    sql = probe.POLICY_CONCEPT_MATCH_SQL
+    assert "jsonb_array_elements_text(concept_ids)" in sql
+    assert "jsonb_typeof(concept_ids) = 'array'" in sql, "非数组形态要显式排除，不能靠异常"
+    assert "&&" not in sql, "`&&` 只对数组成立，对 jsonb 会 500"
+
+
+def test_policy_concept_match_never_casts_elements():
+    """元素按**文本**比对，不做数值强转。
+
+    脏数据（元素是字符串、对象）在 `::bigint` 下会让整条归因抛错，
+    观感是"语义库坏了"；按文本比则只是不命中。同 `parse_ts` 对坏时间戳返回 None
+    的纪律：巡检工具的输入坏了要"判不出"，不能自己崩。
+    """
+    sql = probe.POLICY_CONCEPT_MATCH_SQL
+    for cast in ("::bigint", "::int ", "::integer"):
+        assert cast not in sql, f"出现数值强转 {cast!r} 就会在脏数据上崩"
+
+
+# ── 新状态词表必须进判据（unblock-silent-dispatch-stalls task 4.4）──────────────
+
+
+def _supply(**kw):
+    base = dict(
+        attempts=0, observations=120182, latest_observation="2026-09-18",
+        policies=[{"id": 2659, "enabled": True}], runs=[],
+        open_run_age_seconds=None, now=date(2026, 11, 15), max_stale_days=7,
+    )
+    base.update(kw)
+    return probe.classify_supply(**base)
+
+
+def test_stalled_runs_count_as_dispatch_failure():
+    """2026-11-15 活库实测形态：stock 族近 5 次是 [stalled, stalled, failed, failed, failed]。
+
+    `stalled` 是回收器关的终态（执行侧从未上报），对供给而言与 failed 同族。
+    修复前它被当成"既非失败也非成功"，判据掉到 `zero_yield`，读出来是
+    「策略在跑且报成功」——而这条族已经连续失败/卡死多日。
+    """
+    runs = [{"status": s} for s in ("stalled", "stalled", "failed", "failed", "failed")]
+    assert _supply(runs=runs) == "dispatch_failing"
+
+
+def test_skipped_rows_do_not_fill_the_run_window():
+    """`skipped` 是单飞跳过的**记录**，不是运行。
+
+    五跳全被挡住时若让它占满窗口，「最近跑了 5 次」就把阻塞藏起来。
+    这里窗口是 [skipped, failed×5]：去掉 skipped 后五次全是失败 ⇒ dispatch_failing；
+    不过滤则首 5 条含 skipped ⇒ 落不到"全失败"。
+    """
+    runs = [{"status": "skipped"}] + [{"status": "failed"} for _ in range(5)]
+    assert _supply(runs=runs) == "dispatch_failing"
+
+
+def test_producing_is_not_over_corrected():
+    """成对用例：新词表不许把正常族也判成失败。"""
+    runs = [{"status": "success"}, {"status": "failed"}]
+    assert _supply(runs=runs, latest_observation="2026-11-14") == "producing"

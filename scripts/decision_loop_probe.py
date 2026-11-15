@@ -71,6 +71,50 @@ SEMANTIC_DSN_ENVS = ("FD_OPEN_DATA_DSN", "FD_OPEN_DATA_MCP_DATABASE_URL")
 #: 闭环判据认为"有结论"的 verdict 集合。
 DECIDED_VERDICTS = ("hit", "miss")
 
+#: 策略 ↔ 概念的匹配谓词。**`crawl_policies.concept_ids` 是 `jsonb`，不是数组。**
+#:
+#: 2026-11-15 实历：实际打库时 `concept_ids && %s::text[]` 直接报
+#: `operator does not exist: jsonb && text[]` —— 也就是说 `--attribution` 这条供给归因
+#: **在生产上一次都没跑通过**，而它恰恰是本 change 第 4.4 项要引用的那条判据。
+#: 两个看起来更简单的写法也都不对（同一时刻在活库上实测）：
+#:   * `concept_ids ?| array['378']` / `? '378'` → 对 `[378,379]` 返回 **false**
+#:     （`?` 家族匹配的是**字符串**元素/键，不匹配数字）；
+#:   * `concept_ids @> '[378]'::jsonb` → 能命中，但那是**包含**语义（全都要在），
+#:     而这里要的是**任一命中**（`&&` 的语义）。
+#: 只有把数组元素摊成文本再比才对，且**不做数值强转**——元素若是脏数据，
+#: `::bigint` 会让整条归因崩掉（与 `parse_ts` 对坏时间戳返回 None 同一条纪律：
+#: 巡检工具的输入坏了，要报"判不出"，不能自己崩）。
+POLICY_CONCEPT_MATCH_SQL = (
+    " WHERE enabled"
+    "   AND jsonb_typeof(concept_ids) = 'array'"
+    "   AND EXISTS ("
+    "         SELECT 1 FROM jsonb_array_elements_text(concept_ids) AS elem"
+    "          WHERE elem.value = ANY(%s::text[])"
+    "       )"
+)
+
+#: `policy_runs.status` 里**算作派发失败**的取值。
+#:
+#: `stalled` 是 unblock-silent-dispatch-stalls 引入的终态：执行侧从未上报终态、行超过
+#: 年龄上限后被回收器关掉。**它不是成功，也不是"没发生过"**——对供给而言它与 `failed`
+#: 同一族（派发跑了，数据没来）。2026-11-15 实测：补上这个状态之前，stock 族近 5 次运行
+#: 是 `[stalled, stalled, failed, failed, failed]`，"全部失败"判不出来，最后落到
+#: `zero_yield` ⇒ 词表里那句「策略在跑且报成功」把一个连续失败/卡死多日的族说成了正常。
+#: 这是「闭集只被断言、不被驱动就会漂移」的又一例：新状态进了库，判据词表没跟着学。
+FAILED_RUN_STATUSES = ("failed", "stalled")
+
+#: **不是运行**的状态，不进 `recent` 窗口。
+#:
+#: `skipped` 是单飞跳过留下的记录（unblock-silent-dispatch-stalls task 3.1/3.3）：它证明
+#: "这一跳被谁挡住了"，但它既不是尝试也不是产出。让它参与判断会把「连续 5 跳被挡住」
+#: 读成「最近跑了 5 次」，从而把阻塞藏进 `zero_yield`。
+NON_RUN_STATUSES = ("skipped",)
+
+
+def _judgeable_runs(runs: Sequence[dict]) -> list[dict]:
+    """只留真正的运行（去掉 `skipped` 这类"记录"），保持库里的时间序。"""
+    return [r for r in runs if r.get("status") not in NON_RUN_STATUSES]
+
 
 @dataclass
 class Violation:
@@ -627,8 +671,8 @@ def classify_supply(
     if open_run_age_seconds is not None and open_run_age_seconds > open_run_stuck_seconds():
         return "dispatch_blocked"
 
-    recent = list(runs)[:5]
-    if recent and all(r.get("status") == "failed" for r in recent):
+    recent = _judgeable_runs(runs)[:5]
+    if recent and all(r.get("status") in FAILED_RUN_STATUSES for r in recent):
         return "dispatch_failing"
 
     fresh = False
@@ -709,7 +753,7 @@ def attribute_supply(
             if concept_ids:
                 cur.execute(
                     "SELECT id, name, cron_expr, enabled, concept_ids FROM crawl_policies"
-                    " WHERE enabled AND concept_ids && %s::text[]",
+                    + POLICY_CONCEPT_MATCH_SQL,
                     ([str(c) for c in concept_ids],),
                 )
                 policies = [
