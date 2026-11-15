@@ -207,3 +207,54 @@ def test_all_codes_used_in_the_service_are_registered():
         found |= set(pattern.findall(py.read_text(encoding="utf-8")))
     unregistered = found - set(CODES)
     assert unregistered == set(), f"源码里出现了未登记的码：{sorted(unregistered)}"
+
+
+def test_schema_version_rejection_carries_a_copyable_payload():
+    """拒收要自带「那我该填什么」（2026-11-15：7 天 17 次落账只成 1 条，16 次是 "1.0"）。
+
+    只回 `must be "1"` 时，调用方知道值错了、却不知道整份 payload 该长什么样；
+    提示词那一侧漂移一次就会重犯。这里把**最小可用**的 payload 放进错误体，
+    并要求三件事同时成立：允许值、类型说明、可粘贴的例子。
+    """
+    from fd_quant.contracts.models import ContractError
+
+    @map_errors
+    def tool():
+        raise ContractError("schema_version",
+                            "must be \"1\" (got '1.0'); unsupported versions are rejected")
+
+    err = tool().structured_content["error"]
+    assert err["code"] == E.INVALID_INPUT
+    hint = err["hint"]
+    assert hint["allowed"] == "1"
+    assert hint["type"] == "string"
+    assert "不是数字" in hint["note"]          # 类型这件事必须写出来，不是靠猜
+    ex = hint["example"]
+    assert ex["schema_version"] == "1"
+    for k in ("as_of", "subject", "side", "basis"):
+        assert k in ex                          # 必需的四个字段
+    assert set(ex["producer"]) == {"pack", "skill"}
+
+
+def test_unknown_field_rejection_lists_the_whitelist():
+    from fd_quant.contracts.models import ContractError
+
+    @map_errors
+    def tool():
+        raise ContractError("confidence", "unknown field")
+
+    hint = tool().structured_content["error"]["hint"]
+    assert "conviction" in hint["allowed_fields"] and "confidence" not in hint["allowed_fields"]
+
+
+def test_other_contract_errors_gain_no_hint():
+    """别让错误体变成第二份 schema：只有「最小形状稳定」的两档给 hint。"""
+    from fd_quant.contracts.models import ContractError
+
+    @map_errors
+    def tool():
+        raise ContractError("side", "must be one of ...")
+
+    err = tool().structured_content["error"]
+    assert "hint" not in err
+    assert err["field"] == "side"

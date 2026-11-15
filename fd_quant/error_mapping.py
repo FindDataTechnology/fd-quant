@@ -30,9 +30,43 @@ from __future__ import annotations
 
 import functools
 import sqlite3
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from .errors import INTERNAL_ERROR, INVALID_INPUT, UPSTREAM_UNAVAILABLE, error_result
+
+
+def _contract_hint(field: Any, reason: Any) -> Optional[dict[str, Any]]:
+    """拒收要自带「那我该填什么」。
+
+    为什么不是只回 `must be "1"`：2026-11-15 实测本 cell 的投研舰队 7 天 17 次
+    `record_decision` 只落了 1 条，16 次是把 `schema_version` 写成 `"1.0"`（模型按习惯
+    填版本号）。错误原文已经点明了值，但**调用方不知道整份 payload 该长什么样**，
+    而提示词那一侧只要漂移一次就会重犯。把一份**最小可用**的 payload 直接放在错误里，
+    调用方照抄即可自愈——拒收原文是最便宜的提示词，前提是它长得像一段可粘贴的调用。
+
+    只对「有稳定最小形状」的契约给 hint：`schema_version`（Rating）与 `unknown field`
+    （字段白名单）。其余 path 返回 None，保持原样——别让错误体变成第二份 schema。
+    """
+    from .contracts.models import _RATING_FIELDS, SUPPORTED_SCHEMA_VERSION
+
+    if field == "schema_version":
+        return {
+            "allowed": SUPPORTED_SCHEMA_VERSION,
+            "type": "string",
+            "note": (f'必须是**字符串** "{SUPPORTED_SCHEMA_VERSION}"；不是数字 '
+                     f'{SUPPORTED_SCHEMA_VERSION}，也不是 "1.0"。'),
+            "example": {
+                "schema_version": SUPPORTED_SCHEMA_VERSION,
+                "as_of": "<ISO 日期，与入参 as_of 相同>",
+                "subject": "<标的，与入参 symbol 相同>",
+                "side": "<方向>",
+                "basis": "<判定理由，1-3 句>",
+                "producer": {"pack": "<与入参 pack 相同>", "skill": "<与入参 skill 相同>"},
+            },
+        }
+    if isinstance(reason, str) and reason.startswith("unknown field"):
+        return {"allowed_fields": list(_RATING_FIELDS)}
+    return None
 
 
 def _classify(exc: BaseException) -> tuple[str, str, dict[str, Any]] | None:
@@ -45,10 +79,13 @@ def _classify(exc: BaseException) -> tuple[str, str, dict[str, Any]] | None:
         return INVALID_INPUT, str(exc), {}
     if isinstance(exc, ContractError):
         # ContractError 自带 path/reason：把它们提出来，调用方不必解析文本。
-        return INVALID_INPUT, str(exc), {
-            "field": getattr(exc, "path", None),
-            "reason": getattr(exc, "reason", None),
-        }
+        field = getattr(exc, "path", None)
+        reason = getattr(exc, "reason", None)
+        extra: dict[str, Any] = {"field": field, "reason": reason}
+        hint = _contract_hint(field, reason)
+        if hint is not None:
+            extra["hint"] = hint
+        return INVALID_INPUT, str(exc), extra
     if isinstance(exc, LedgerError):
         extra: dict[str, Any] = {}
         missing = getattr(exc, "missing_trading_days", None)
