@@ -140,9 +140,9 @@ def serve_http(host: str, port: int) -> None:  # pragma: no cover - 传输层
     未配置分支保持 ``app.run(transport="http")``——与接入前逐字节一致。这是
     「开关关闭时行为不变」唯一可靠的实现方式：不是挂一个内部空转的中间件。
     """
-    from .auth import BearerAuthMiddleware, configured_token
+    from .auth import BearerAuthMiddleware, gate_enabled
 
-    if not configured_token():
+    if not gate_enabled():
         app.run(transport="http", host=host, port=port)
         return
 
