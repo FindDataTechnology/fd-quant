@@ -204,3 +204,43 @@ def test_bearer_fingerprint_still_precedes_env(monkeypatch):
     got = caller_mod.resolve_caller()
     assert got == caller_mod._fingerprint("sk-abc"), "指纹档位被静默跳过了"
     assert got != "deployed-identity"
+
+
+# ── 3.3 错误映射 ────────────────────────────────────────────────────────────
+
+
+def test_signature_error_maps_to_invalid_input_not_retryable():
+    """验签失败必须是 **4xx 类**、且明说不可重试。
+
+    两半都断言：`invalid_input`（调用方的错）与 `code != upstream_unavailable`
+    （可重试档）。只断前者的话，把分类改成"两档都给"仍会绿。
+    """
+    from fd_quant.error_mapping import _classify
+    from fd_quant.errors import INVALID_INPUT, UPSTREAM_UNAVAILABLE
+
+    exc = CallerSignatureError(REASON_MISMATCH, "签名不匹配")
+    got = _classify(exc)
+    assert got is not None, "验签失败不能被当成未知异常照原样抛"
+    code, message, extra = got
+    assert code == INVALID_INPUT
+    assert code != UPSTREAM_UNAVAILABLE
+    assert "签名" in message, f"报文必须让人一眼看出是签名问题：{message!r}"
+    assert extra["reason"] == REASON_MISMATCH, "原因码要原样透出，便于调用方分流"
+    assert extra["retryable"] is False
+
+
+def test_mapped_result_carries_the_code_through_map_errors():
+    """经 `map_errors` 包一层后仍然是同一个码——在分类器里对、在包装器里丢，等于没做。"""
+    from fd_quant.error_mapping import map_errors
+
+    def boom():
+        raise CallerSignatureError(REASON_EXPIRED, "时间戳偏移 900s 超出 ±300s")
+
+    result = map_errors(boom)()
+    payload = getattr(result, "structured_content", None) or getattr(result, "structuredContent", None)
+    assert payload is not None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    assert error, f"结构化错误体形状变了：{payload!r}"
+    assert error.get("code") == "invalid_input"
+    assert "签名" in str(error.get("message", ""))
+    assert error.get("reason") == REASON_EXPIRED, "原因码要一路透到结构化体"

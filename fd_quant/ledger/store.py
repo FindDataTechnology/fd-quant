@@ -349,6 +349,38 @@ def migration_hint(root: Optional[os.PathLike | str] = None) -> Optional[str]:
     )
 
 
+def migrate_stray_ledger(root: Optional[os.PathLike | str] = None, *, dry_run: bool = False) -> str:
+    """把根目录的孤立旧库搬到 `<root>/legacy/ledger.db`。**幂等、不覆盖、不合并。**
+
+    返回一句人类可读的结局，**永不抛**（三种结局各一句话）：搬了 / 目标已存在跳过 /
+    没有可搬的东西。迁移是部署动作，一台"没什么可搬"的机器不该让脚本非零退出。
+
+    **WAL 边车一起搬**：只搬主文件会把已提交但未 checkpoint 的帧（`-wal`）留在原地，
+    等于搬了一份**旧数据**过去，而源文件被删后那些帧永久丢失。顺序是先边车后主文件
+    ——中途崩溃时留下的是「主文件在、无 wal」（无害），而不是「wal 在、主文件没了」。
+
+    调用前提：**先把服务停掉**。运行中搬库会让在写的连接指向一个被移走的 inode。
+    """
+    base = Path(root) if root is not None else ledger_root()
+    stray = base / DEFAULT_DB_FILENAME
+    target_dir = base / LEGACY
+    target = target_dir / LEDGER_DB_FILENAME
+
+    if not stray.is_file():
+        return f"没有可搬的旧库：{stray} 不存在"
+    if target.exists():
+        return f"目标已存在，跳过（不覆盖、不合并）：{target}"
+    if dry_run:
+        return f"[dry-run] 将把 {stray} 搬到 {target}（连同 -wal/-shm 边车）"
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for suffix in ("-wal", "-shm", ""):
+        src = base / f"{DEFAULT_DB_FILENAME}{suffix}"
+        if src.exists():
+            os.replace(src, target_dir / f"{LEDGER_DB_FILENAME}{suffix}")
+    return f"已把 {stray} 搬到 {target}"
+
+
 
 def _json_dumps(value: Any) -> str:
     """存库前统一序列化：`allow_nan=False` 让 NaN/Inf 在**写入期**就炸，

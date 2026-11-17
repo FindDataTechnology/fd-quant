@@ -195,3 +195,163 @@ def test_startup_is_silent_when_nothing_to_migrate(tmp_path, monkeypatch):
     sink = _io.StringIO()
     assert announce_ledger_migration(stream=sink) is None
     assert sink.getvalue() == ""
+
+
+# ── 4.1 迁移脚本：幂等、不覆盖、边车一起搬 ───────────────────────────────────
+
+
+def _seed_legacy_row(path, *, as_of="2025-01-06", symbol="600519.SH"):
+    """在 `path` 建一个旧式单文件库，并写一条归属未知（legacy）的记录。"""
+    import ledgerdata as ld
+    from fd_quant.caller import LEGACY
+    from fd_quant.ledger import LedgerStore
+
+    store = LedgerStore(path)
+    rec = store.record(
+        caller=LEGACY, as_of=as_of, symbol=symbol,
+        pack=ld.PACK, skill=ld.SKILL,
+        payload=ld.rating(as_of, symbol, side="buy", pack=ld.PACK, skill=ld.SKILL),
+    )
+    return rec["decision_id"]
+
+
+def _rows(path):
+    import sqlite3
+
+    con = sqlite3.connect(path)
+    try:
+        return con.execute(
+            "SELECT decision_id, caller, as_of, symbol, payload FROM decisions ORDER BY decision_id"
+        ).fetchall()
+    finally:
+        con.close()
+
+
+def test_migration_moves_the_stray_ledger_and_keeps_rows(tmp_path):
+    from fd_quant.ledger.store import migrate_stray_ledger
+
+    stray = tmp_path / DEFAULT_DB_FILENAME
+    _seed_legacy_row(stray)
+    before = _rows(stray)
+
+    out = migrate_stray_ledger(tmp_path)
+    target = tmp_path / "legacy" / LEDGER_DB_FILENAME
+    assert "已把" in out
+    assert target.is_file() and not stray.exists()
+    assert _rows(target) == before, "迁移不得改动任何一行"
+
+
+def test_migration_is_idempotent(tmp_path):
+    """跑两次：第二次跳过，数据与第一次逐条相同（任务判据原话）。"""
+    from fd_quant.ledger.store import migrate_stray_ledger
+
+    stray = tmp_path / DEFAULT_DB_FILENAME
+    _seed_legacy_row(stray)
+    migrate_stray_ledger(tmp_path)
+    target = tmp_path / "legacy" / LEDGER_DB_FILENAME
+    first = _rows(target)
+
+    out2 = migrate_stray_ledger(tmp_path)
+    assert "没有可搬" in out2 or "跳过" in out2
+    assert _rows(target) == first
+
+
+def test_existing_target_is_never_overwritten(tmp_path):
+    """目标已存在 ⇒ 跳过、不报错、不改内容。覆盖等于用一份旧数据盖掉另一份。"""
+    from fd_quant.ledger.store import migrate_stray_ledger
+
+    stray = tmp_path / DEFAULT_DB_FILENAME
+    _seed_legacy_row(stray)
+    target_dir = tmp_path / "legacy"
+    target_dir.mkdir()
+    target = target_dir / LEDGER_DB_FILENAME
+    target.write_bytes(b"NOT-A-DB-SENTINEL")
+
+    out = migrate_stray_ledger(tmp_path)
+    assert "跳过" in out
+    assert target.read_bytes() == b"NOT-A-DB-SENTINEL"
+    assert stray.exists(), "跳过时源文件也不该被动"
+
+
+def test_wal_sidecars_move_with_the_database(tmp_path):
+    """`-wal`/`-shm` 必须一起搬：只搬主文件会丢掉已提交但未 checkpoint 的帧。"""
+    from fd_quant.ledger.store import migrate_stray_ledger
+
+    stray = tmp_path / DEFAULT_DB_FILENAME
+    _seed_legacy_row(stray)
+    (tmp_path / f"{DEFAULT_DB_FILENAME}-wal").write_bytes(b"wal-frames")
+    (tmp_path / f"{DEFAULT_DB_FILENAME}-shm").write_bytes(b"shm")
+
+    migrate_stray_ledger(tmp_path)
+    legacy = tmp_path / "legacy"
+    assert (legacy / f"{LEDGER_DB_FILENAME}-wal").read_bytes() == b"wal-frames"
+    assert (legacy / f"{LEDGER_DB_FILENAME}-shm").exists()
+    assert not (tmp_path / f"{DEFAULT_DB_FILENAME}-wal").exists()
+
+
+def test_dry_run_moves_nothing(tmp_path):
+    from fd_quant.ledger.store import migrate_stray_ledger
+
+    stray = tmp_path / DEFAULT_DB_FILENAME
+    stray.write_bytes(b"x")
+    out = migrate_stray_ledger(tmp_path, dry_run=True)
+    assert "dry-run" in out
+    assert stray.exists() and not (tmp_path / "legacy").exists()
+
+
+def test_cli_prints_the_outcome(tmp_path, capsys):
+    """脚本入口能跑通（`--root` + `--dry-run`），且把结局打在 stdout。"""
+    import importlib.util
+
+    stray = tmp_path / DEFAULT_DB_FILENAME
+    stray.write_bytes(b"x")
+    spec = importlib.util.spec_from_file_location(
+        "migrate_ledger_to_legacy",
+        str(store_mod.Path(__file__).resolve().parents[1] / "scripts" / "migrate_ledger_to_legacy.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.main(["--root", str(tmp_path), "--dry-run"]) == 0
+    assert "dry-run" in capsys.readouterr().out
+
+
+# ── 4.2 legacy 行内语义不受影响 ─────────────────────────────────────────────
+
+
+def test_legacy_rows_readable_by_legacy_and_invisible_to_named_callers(tmp_path):
+    """迁移后两层同时成立：`legacy` 显式查询读得回；具名 caller 一条都看不到。
+
+    这条是 4.2 的判据原话。它在**两层**上都成立才叫双保险：存储层（分库=不同文件）
+    与行层（`caller` 过滤）。只验一层的话，把 `caller` 列过滤删掉仍然绿。
+    """
+    from fd_quant.caller import LEGACY
+    from fd_quant.ledger import LedgerStore
+    from fd_quant.ledger.store import caller_db_path, migrate_stray_ledger
+
+    stray = tmp_path / DEFAULT_DB_FILENAME
+    decision_id = _seed_legacy_row(stray)
+    migrate_stray_ledger(tmp_path)
+
+    # 为什么用 `get()` 而不是 `retrieve()`：`retrieve` 只回**已结算**的记录
+    # （"点内检索：只回结算日 ≤ as_of 的记录"），而判据问的是"读得回"。
+    # 拿 retrieve 当判据会得到"两条列表都空"，看起来像迁移丢了数据。
+    legacy_store = LedgerStore(tmp_path / "legacy" / LEDGER_DB_FILENAME)
+    got = legacy_store.get(decision_id)
+    assert got and got["decision_id"] == decision_id, "以 legacy 显式查询必须完整读回"
+    assert got["payload"], "payload 不得在迁移中丢失"
+
+    # `get()` 的返回体**不含 caller 列**（它是快照视图），所以「行内 caller 仍是
+    # legacy」只能用 SQL 直接读——这也正是 4.2 说的"行内语义不受影响"：
+    # 迁移只动文件位置，一行都不改写。
+    import sqlite3
+
+    con = sqlite3.connect(tmp_path / "legacy" / LEDGER_DB_FILENAME)
+    try:
+        callers = {r[0] for r in con.execute("SELECT caller FROM decisions")}
+    finally:
+        con.close()
+    assert callers == {LEGACY}, f"行内归属被改动了：{callers}"
+
+    # 第二层（存储层）：具名 caller 用的是**另一个文件**，压根没有这条记录。
+    named = LedgerStore(caller_db_path("alice@example.com", {"FD_QUANT_LEDGER_ROOT": str(tmp_path)}))
+    assert named.get(decision_id) is None, "具名 caller 的库里不得出现旧记录"

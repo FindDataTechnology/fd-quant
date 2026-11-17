@@ -71,10 +71,21 @@ def _contract_hint(field: Any, reason: Any) -> Optional[dict[str, Any]]:
 
 def _classify(exc: BaseException) -> tuple[str, str, dict[str, Any]] | None:
     """返回 (code, message, extra) 或 None（表示不认识，应照常抛出）。"""
+    from .caller import CallerSignatureError
     from .compute.base import ComputeError
     from .contracts.models import ContractError
     from .ledger.errors import LedgerError
 
+    if isinstance(exc, CallerSignatureError):
+        # 身份头验签失败：**调用方的错**，不是本机存储的错。
+        # 归到 `upstream_unavailable`（可重试档）会让调用方带着同一个坏头重试，而重试
+        # 永远不会成功——那正是"把 4xx 报成 5xx"的代价。message 必须含「签名」二字：
+        # 调用方读到的第一行就该知道是哪个头出了问题。
+        return INVALID_INPUT, f"身份签名校验失败：{exc.detail}", {
+            "reason": exc.reason,
+            "retryable": False,
+            "header": "X-Fd-Caller",
+        }
     if isinstance(exc, ComputeError):
         return INVALID_INPUT, str(exc), {}
     if isinstance(exc, ContractError):
