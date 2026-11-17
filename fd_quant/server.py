@@ -111,6 +111,22 @@ def build_server() -> FastMCP:
 app = build_server()
 
 
+def announce_ledger_migration(stream=None) -> "str | None":
+    """把「根目录有孤立旧库」的迁移提示打到 **stderr**，返回提示文本（没有则 None）。
+
+    **刻意不打 stdout**：stdio 传输下 stdout 就是 MCP 报文通道，往上写一个字都会
+    破坏协议流（客户端表现为「连上了但没有工具」）。任务 1.3 的判据原文写的是
+    「捕获 stdout」，这里按传输语义改成 stderr 并在此说明——判据要看的是「启动时
+    有人看得见这条提示」，不是「它恰好在 fd 1 上」。
+    """
+    from .ledger.store import migration_hint
+
+    hint = migration_hint()
+    if hint:
+        print(hint, file=stream if stream is not None else sys.stderr)
+    return hint
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog=SERVER_NAME)
     parser.add_argument("--http", type=int, default=None, metavar="PORT",
@@ -125,6 +141,9 @@ def main(argv: list[str] | None = None) -> int:
         for spec in all_surface_tools():
             print(f"{spec.group:22s} {spec.name}")
         return 0
+
+    # 迁移提示放在两种传输之前：迁移是部署期的事，与本次怎么 serve 无关。
+    announce_ledger_migration()
 
     if args.http:
         serve_http(args.host, args.http)

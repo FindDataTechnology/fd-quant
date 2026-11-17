@@ -56,9 +56,11 @@ COMMIT 之前对任何读者都不可见；进程在 COMMIT 前死掉（`os._exi
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
+import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -252,11 +254,100 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
 
 
 def default_db_path() -> Path:
-    """零配置默认库路径：`FD_QUANT_LEDGER_DB` → 否则当前工作目录下的单文件。"""
+    """零配置默认库路径：`FD_QUANT_LEDGER_DB` → 否则当前工作目录下的单文件。
+
+    **自本变更（seal-ledger-path-and-caller-isolation）起，这个函数只服务回退链与
+    迁移提示**：真正落盘的位置由 `caller_db_path()` 按调用者派生，调用方无法指定。
+    """
     env = os.environ.get("FD_QUANT_LEDGER_DB")
     if env:
         return Path(env).expanduser()
     return Path.cwd() / DEFAULT_DB_FILENAME
+
+
+#: 分库里那个文件永远叫这个名字——调用方看到的 `db_path` 是 `<slug>/ledger.db`。
+LEDGER_DB_FILENAME = "ledger.db"
+
+#: 子目录名的字符上限。截断只影响**可读性**，唯一性由 sha256 后缀保证。
+SLUG_MAX_LEN = 48
+
+#: `safe_segment()` 对空/全非法输入的回退片段。
+_EMPTY_SEGMENT = "anon"
+
+
+def ledger_root(env: Optional[Mapping[str, str]] = None) -> Path:
+    """账本根目录（**服务端**决定，调用方不可指定）。
+
+    回退链刻意与 `default_db_path()` 兼容：`FD_QUANT_LEDGER_ROOT` 没配的老部署，
+    取旧变量 `FD_QUANT_LEDGER_DB` 的父目录 ⇒ 库文件从 `/data/fd_quant_ledger.db`
+    变成 `/data/<caller>/ledger.db`，**不用改清单也能跑**（旧库不会自动搬，见
+    `migration_hint()`）。
+    """
+    e = os.environ if env is None else env
+    root = (e.get("FD_QUANT_LEDGER_ROOT") or "").strip()
+    if root:
+        return Path(root).expanduser()
+    legacy = (e.get("FD_QUANT_LEDGER_DB") or "").strip()
+    if legacy:
+        return Path(legacy).expanduser().parent
+    return Path.cwd()
+
+
+def safe_segment(caller: str) -> str:
+    """caller → 目录名片段：小写后只保留 `[a-z0-9_-]`，其余一律换成 `-`。
+
+    `..`、`/`、盘符、控制字符因此**不可能**出现在结果里——这不是"过滤得比较全"，
+    是白名单：只要不在白名单里就变成 `-`。截断到 `SLUG_MAX_LEN`，**空串**回落
+    `anon`；全非法字符（`!!!` → `---`）不回落——替换后仍非空，白名单里没有的字符
+    变成 `-` 本身就是安全结果。两者仍不撞库：目录名带原文摘要。
+    """
+    raw = (caller or "").lower()
+    out = re.sub(r"[^a-z0-9_-]", "-", raw)[:SLUG_MAX_LEN]
+    return out or _EMPTY_SEGMENT
+
+
+def caller_digest(caller: str) -> str:
+    """caller 的 8 位十六进制摘要。
+
+    **必须对原始 caller 取值、不能对 slug 取**：`A/B` 与 `A-B` 经 slug 后同形，
+    只有哈希原文才能把它们分开（任务 1.2 的判据）。
+    """
+    return hashlib.sha256((caller or "").encode("utf-8")).hexdigest()[:8]
+
+
+def caller_db_path(caller: str, env: Optional[Mapping[str, str]] = None) -> Path:
+    """一个 caller 一个库文件：`<root>/<safe_segment>-<sha256[:8]>/ledger.db`。
+
+    目录名带摘要的代价是不可读（`zhang-san-1a2b3c4d` 而不是邮箱）。可读性不是契约，
+    隔离与安全是：slug 同形的两条 caller 绝不落到同一个库。
+    """
+    return ledger_root(env) / f"{safe_segment(caller)}-{caller_digest(caller)}" / LEDGER_DB_FILENAME
+
+
+def migration_hint(root: Optional[os.PathLike | str] = None) -> Optional[str]:
+    """根目录里有孤立旧库时返回一条迁移提示；否则 `None`。
+
+    **不自动搬**：自动搬会在"根目录恰好有个同名但内容不同"的机器上做一次不可逆的
+    覆盖，而那台机器上没有人在看。提示只描述两条路径与迁移命令，决定权留给人。
+
+    提示以 `LEGACY` 为子目录名——与行内 `caller='legacy'`（归属未知）是同一语义的
+    存储层表达，两层同时生效，零数据改写。
+    """
+    base = Path(root) if root is not None else ledger_root()
+    stray = base / DEFAULT_DB_FILENAME
+    target_dir = base / LEGACY
+    try:
+        if not stray.is_file() or target_dir.exists():
+            return None
+    except OSError:  # 读不到就当没有——提示不是判据，不该让启动失败
+        return None
+    target = target_dir / LEDGER_DB_FILENAME
+    return (
+        f"[ledger] 根目录存在旧单文件账本 {stray}，但没有 {target_dir} 目录。"
+        f"账本已按 caller 分库，旧库不会被任何具名 caller 读到。"
+        f"迁移（不自动执行）：mv {stray} {target}"
+    )
+
 
 
 def _json_dumps(value: Any) -> str:
