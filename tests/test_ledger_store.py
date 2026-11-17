@@ -471,17 +471,35 @@ def test_nested_db_directory_is_created(tmp_path):
 
 
 def test_env_var_default_is_honoured_by_the_tool_layer(tmp_path, monkeypatch):
-    """工具层的默认路径同样支持 env（工具不传 db_path 时走 env）。"""
-    from fd_quant.ledger import tools
+    """工具层不传 db_path 时按根目录 + caller 派生；旧变量只贡献根目录。
 
-    env_path = tmp_path / "tool.db"
+    `FD_QUANT_LEDGER_DB` 现在只作**根目录回退**（取父目录）——库文件名与子目录
+    由服务端按 caller 决定，调用方（含部署）都不能再指定到具体文件。
+    """
+    from fd_quant.ledger import tools
+    from fd_quant.ledger.store import caller_db_path
+
+    root = tmp_path / "root"
+    env_path = root / "tool.db"          # 旧变量：只贡献**根目录**（取父目录）
+    monkeypatch.delenv("FD_QUANT_LEDGER_ROOT", raising=False)  # 让回退链生效
     monkeypatch.setenv("FD_QUANT_LEDGER_DB", str(env_path))
+    monkeypatch.setenv("FD_QUANT_CALLER", "store-layer-caller")
     r = tools.record_decision(
         as_of="2025-01-06", symbol="600519.SS", pack=ld.PACK, skill=ld.SKILL,
         payload=ld.rating("2025-01-06", "600519.SS").to_dict(),
     )
-    assert r["db_path"] == str(env_path)
+    expected = caller_db_path("store-layer-caller", {"FD_QUANT_LEDGER_DB": str(env_path)})
+    assert expected.parent.parent == root, "旧变量的父目录就是根"
+    # 信封给相对范围；绝对落点要另外核（同一条事实的两种表述）。
+    assert r["db_path"] == str(expected.relative_to(root))
+    assert expected.is_file(), f"库应落在 {expected}"
     assert r["result"]["created"] is True
+
+    # 新变量在场时以它为准（回退链的优先次序，不是"两个都算"）。
+    monkeypatch.setenv("FD_QUANT_LEDGER_ROOT", str(tmp_path / "new-root"))
+    r2 = tools.list_pending_decisions(as_of="2025-01-06")
+    assert r2["db_path"].startswith("store-layer-caller-")
+    assert (tmp_path / "new-root" / r2["db_path"]).is_file()
 
 
 # ── 辅助 ────────────────────────────────────────────────────────

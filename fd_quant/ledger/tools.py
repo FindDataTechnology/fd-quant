@@ -5,9 +5,10 @@
 返回形状，以及账本层的两条显式假设（**序列由调用方传入** = 账本不取数；
 **持有期按交易日计** = 交易日历由传入序列的日期集合隐式给出）。
 
-数据库路径三态：显式 `db_path` → 环境变量 `FD_QUANT_LEDGER_DB` → 当前工作目录
-`fd_quant_ledger.db`。每个工具都带上 `db_path`，故同一台机器上多份账本可并存
-（测试因此零配置，只在 env 或参数上传一个临时文件）。
+数据库路径三态：显式 `db_path` → 环境变量 `FD_QUANT_LEDGER_ROOT` 派生到本次调用者的
+子目录 → 当前工作目录。**`db_path` 只在进程内可用**：它不出现在 MCP 参数面
+（change `seal-ledger-path-and-caller-isolation`），客户端传了也会被丢弃——
+存储位置由服务端按 caller 派生，调用方无法指定。
 
 **无推送**：这四个工具里没有任何"推送 / 广播 / 订阅 / 通知"形状的动作——反思只存、
 只随检索带出；把它注入决策者是消费侧（P5/P4）的行为（spec: 反思存储与不自动广播）。
@@ -18,7 +19,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from ..caller import resolve_caller
 from ..compute import ToolSpec
-from .store import LedgerStore
+from .store import LEDGER_DB_FILENAME, LedgerStore, caller_db_path, ledger_root
 from .settlement import DEFAULT_HOLDING_DAYS, check_iso_date
 
 GROUP = "decision_ledger"
@@ -30,23 +31,41 @@ ASSUMPTIONS = (
 )
 
 
-def _store(db_path: Optional[str]) -> LedgerStore:
-    """按调用参数（或 env / 默认路径）打开账本。短生命周期：调用结束即不再持有连接。"""
-    return LedgerStore(db_path)
+def _store(db_path: Optional[str], caller: Optional[str] = None) -> LedgerStore:
+    """打开账本：显式 `db_path`（仅进程内）→ 按 caller 派生 → 旧默认。
+
+    `caller` 由调用方解析后传入，避免一次调用里 `resolve_caller()` 被算两遍
+    （两次结果必然相同，但两次调用会掩盖「解析依赖请求上下文」这件事）。
+
+    **为什么派生要在这一层而不是 `LedgerStore`**：`LedgerStore` 是纯存储，
+    不该知道 HTTP 头、env、匿名回落这些东西；路径策略是会话层的事。
+    """
+    if db_path is not None:
+        return LedgerStore(db_path)
+    who = caller if caller is not None else resolve_caller()
+    return LedgerStore(caller_db_path(who))
 
 
 def _envelope(tool: str, as_of: str, store: LedgerStore, result: dict) -> dict:
-    """账本工具的统一外壳：工具名 + 口径 + 生效的库路径 + 结果。
+    """账本工具的统一外壳：工具名 + 口径 + 生效的归属范围 + 结果。
 
     与计算面的 `result_envelope` 刻意不同：账本工具的主角不是数值序列，故不造
     `input_start/input_end`，也不编造 evidence——价格来源在结算的
     `benchmark_symbol` / `*_return` 里，判定来源在 `payload` / `evidence` 里。
-    `db_path` 进外壳是因为"这条记录落在哪个库"是调用方必须能核对的事实。
+
+    `db_path` 进外壳是因为"这条记录落在哪个库"是调用方必须能核对的事实——
+    **但只给相对范围，不给绝对路径**：旧版回吐部署的绝对路径，那是泄漏面。
+    现在值是 `<归属目录>/ledger.db`，调用方照样能核对归属，拿不到根。
     """
+    try:
+        scope = store.db_path.relative_to(ledger_root())
+    except ValueError:
+        # 进程内显式传了根外的路径（测试/嵌入式）：退回文件名，仍不泄根。
+        scope = store.db_path.name
     return {
         "tool": tool,
         "as_of": as_of,
-        "db_path": str(store.db_path),
+        "db_path": str(scope),
         "result": result,
     }
 
@@ -138,8 +157,8 @@ def record_decision(
       在本账本（且限本人范围内）解析不到时逐条点名；**只报事实，不拦落账**。单位：无（本工具不做算术）。
       假设：账本不取数——任何价格 / 基准序列都由调用方传入；持有期按交易日计，交易日历由传入序列的日期集合隐式给出（账本不内置日历）。
     """
-    store = _store(db_path)
     caller = resolve_caller()
+    store = _store(db_path, caller)
     result = store.record(
         caller=caller, as_of=as_of, symbol=symbol, pack=pack, skill=skill,
         payload=payload, record_kind=record_kind, portfolio_key=portfolio_key,
@@ -245,7 +264,8 @@ def settle_decision(
       reflection_ignored (bool)、counts (行数快照，核对未插入第二行)）。
       假设：账本不取数——任何价格 / 基准序列都由调用方传入；持有期按交易日计，交易日历由传入序列的日期集合隐式给出（账本不内置日历）。
     """
-    store = _store(db_path)
+    caller = resolve_caller()
+    store = _store(db_path, caller)
     result = store.settle(
         decision_id=decision_id, symbol_dates=symbol_dates, symbol_prices=symbol_prices,
         benchmark_dates=benchmark_dates, benchmark_prices=benchmark_prices, as_of=as_of,
@@ -298,7 +318,8 @@ def settle_portfolio(
       不另传（另传就有两个权重来源）；持有期按交易日计，交易日历由传入序列的日期集合
       隐式给出（账本不内置日历）。
     """
-    store = _store(db_path)
+    caller = resolve_caller()
+    store = _store(db_path, caller)
     parsed: dict[str, tuple[Sequence[Any], Sequence[Any]]] = {}
     for sym, pair in dict(legs).items():
         if not isinstance(pair, (list, tuple)) or len(pair) != 2:
@@ -343,8 +364,9 @@ def retrieve_decisions(
       单位：returns 与 alpha 为小数（0.01 = 1%）。
       假设：账本不取数——任何价格 / 基准序列都由调用方传入；持有期按交易日计，交易日历由传入序列的日期集合隐式给出（账本不内置日历）。
     """
-    store = _store(db_path)
-    result = store.retrieve(caller=resolve_caller(), symbol=symbol, as_of=as_of, n_same=n_same,
+    caller = resolve_caller()
+    store = _store(db_path, caller)
+    result = store.retrieve(caller=caller, symbol=symbol, as_of=as_of, n_same=n_same,
                             m_cross=m_cross, pack=pack)
     return _envelope("retrieve_decisions", as_of, store, result)
 
@@ -382,10 +404,11 @@ def list_pending_decisions(
       missing_trading_days_estimate、counts）。仅在调用者自身范围内生效。
       假设：账本不取数——任何价格 / 基准序列都由调用方传入；持有期按交易日计，交易日历由传入序列的日期集合隐式给出（账本不内置日历）。
     """
-    store = _store(db_path)
+    caller = resolve_caller()
+    store = _store(db_path, caller)
     a = check_iso_date(as_of, name="as_of")
     result = store.list_pending(
-        caller=resolve_caller(), pack=pack, record_kind=record_kind,
+        caller=caller, pack=pack, record_kind=record_kind,
         as_of_from=as_of_from, limit=limit, offset=offset,
         holding_days=holding_days, today=a,
     )
@@ -424,9 +447,10 @@ def summarize_pack_performance(
       单位：mean_alpha / mean_raw_return / win_rate 为小数（0.02 = 2%）。
       假设：账本不取数——任何价格 / 基准序列都由调用方传入；持有期按交易日计，交易日历由传入序列的日期集合隐式给出（账本不内置日历）。
     """
-    store = _store(db_path)
+    caller = resolve_caller()
+    store = _store(db_path, caller)
     result = store.stats_by_pack(
-        caller=resolve_caller(), as_of=as_of, packs=packs, group_by_skill=group_by_skill,
+        caller=caller, as_of=as_of, packs=packs, group_by_skill=group_by_skill,
         group_by_holding=group_by_holding, holding_days=holding_days,
     )
     return _envelope("summarize_pack_performance", as_of, store, result)

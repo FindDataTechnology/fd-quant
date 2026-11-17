@@ -19,6 +19,7 @@ import pytest
 import ledgerdata as ld
 from fd_quant.compute import ToolSpec
 from fd_quant.ledger import tools as ledger_tools
+from fd_quant.ledger.store import caller_digest, safe_segment
 from fd_quant.surface import EXTRA_GROUP_LEVELS, SURFACE_GROUP_LEVELS, all_surface_tools
 
 REPO = Path(__file__).resolve().parents[1]
@@ -170,10 +171,14 @@ def test_every_tool_runs_with_zero_configuration_and_is_json_serialisable(spec, 
 
 
 def test_tools_default_to_the_env_var_when_db_path_is_omitted(tmp_path, monkeypatch):
-    """不传 db_path 时走 `FD_QUANT_LEDGER_DB`（零配置部署形态）。"""
-    monkeypatch.setenv("FD_QUANT_LEDGER_DB", str(tmp_path / "env-ledger.db"))
+    """不传 db_path 时按 `FD_QUANT_LEDGER_ROOT` 派生到调用者子目录（零配置部署形态）。"""
+    monkeypatch.setenv("FD_QUANT_LEDGER_ROOT", str(tmp_path))
+    monkeypatch.setenv("FD_QUANT_CALLER", "env-caller")
     r = ledger_tools.retrieve_decisions(symbol="600519.SS", as_of="2025-01-01")
-    assert r["db_path"] == str(tmp_path / "env-ledger.db")
+    # 信封给的是**相对范围**（旧契约给绝对路径，那会泄漏部署根）。
+    assert r["db_path"] == f"{safe_segment('env-caller')}-{caller_digest('env-caller')}/ledger.db"
+    assert r["db_path"].endswith(".db")
+    assert str(tmp_path) not in r["db_path"], "信封不得回吐部署根"
 
 
 def test_a_recorded_decision_is_visible_to_the_other_tools_through_one_db(tmp_path):
@@ -292,6 +297,7 @@ def test_mcp_server_lists_and_calls_the_ledger_tools(tmp_path):
     """
     fastmcp = pytest.importorskip("fastmcp", reason="server extra not installed")
     import asyncio
+    import os
 
     from fd_quant.server import build_server
 
@@ -302,11 +308,11 @@ def test_mcp_server_lists_and_calls_the_ledger_tools(tmp_path):
             assert spec.name in tools, spec.name
             doc = tools[spec.name].description or ""
             assert "账本不取数" in doc and "持有期按交易日计" in doc, spec.name
-        db = str(tmp_path / "mcp.db")
+        # 分库后落点由 `FD_QUANT_LEDGER_ROOT` + caller 派生（`db_path` 不在参数面）。
         payload = ld.rating("2025-01-06", "600519.SS").to_dict()
         result = await app.call_tool("record_decision", {
             "as_of": "2025-01-06", "symbol": "600519.SS", "pack": ld.PACK,
-            "skill": ld.SKILL, "payload": payload, "db_path": db,
+            "skill": ld.SKILL, "payload": payload,
         })
         text = getattr(result, "content", [None])[0]
         body = json.loads(getattr(text, "text", None) or json.dumps(result))

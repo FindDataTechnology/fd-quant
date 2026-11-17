@@ -16,8 +16,9 @@
   （计算层的封闭性由 `tests/test_offline_boundary.py` 断言，未被本改动打破）。
 
 两类工具的纪律不同，`instructions` 里显式分开写，免得调用方把账本也当成纯计算：
-计算工具只对传入序列作答；账本工具把记录落到本地库（路径 `FD_QUANT_LEDGER_DB` 或
-`db_path` 参数），但同样**不取数、不联网**——价格与基准序列一律由调用方传入。
+计算工具只对传入序列作答；账本工具把记录落到本地库（**每个调用者一个库文件**，
+位置由服务端按调用者派生——不接受入参指定，调用方改不动落点），但同样**不取数、
+不联网**——价格与基准序列一律由调用方传入。
 """
 from __future__ import annotations
 
@@ -29,10 +30,16 @@ from fastmcp import FastMCP
 
 from .error_mapping import map_errors
 from .output_schemas import output_schema_for
+from .tool_face import StripExtraArgs, hide_params
 from . import workflows
 from .surface import all_surface_tools, missing_families
 
 SERVER_NAME = "fd-quant"
+
+#: 仅进程内可用的工具参数：不出现在 MCP 参数面，客户端传了也会被丢弃。
+#: 加进来之前先问一句：这个参数能不能改变「数据落到哪 / 谁能看到」？
+#: 能，就不该由调用方给。
+PROCESS_ONLY_PARAMS = ("db_path",)
 
 INSTRUCTIONS = (
     "fd-quant 量化能力面，两组工具：\n"
@@ -44,7 +51,8 @@ INSTRUCTIONS = (
     "summarize_pack_performance）：把决策追加式落到本地 SQLite（幂等键 "
     "caller + as_of + symbol + pack + skill，重复提交被拒并返回既有 decision_id）。"
     "caller 由调用上下文解析、不接受入参声明，记录按调用者隔离——一个调用者只看到"
-    "自己的判定与聚合。到期按传入的价格"
+    "自己的判定与聚合（隔离在存储层：每个调用者一个独立库文件，落点由服务端派生，"
+    "不接受入参指定）。到期按传入的价格"
     "序列结算原始收益与相对基准 alpha（基准按市场后缀映射，可显式覆盖），按 pack 聚合口径"
     "统计。账本同样不取数、不联网——价格与基准序列由调用方传入；持有期按交易日计，交易日历"
     "来自传入序列的日期集合。账本无任何推送/广播接口：反思只存、只随检索带出。"
@@ -70,9 +78,16 @@ def build_server() -> FastMCP:
         # 包一层错误映射（mcp-error-semantics）：领域异常 → 结构化错误码。
         # 不包的话 fastmcp 会把异常包成一段文本、structuredContent 为空，
         # 调用方只能靠解析中文决定要不要重试。
-        app.tool(map_errors(spec.fn), name=spec.name, description=spec.doc,
-                 annotations=spec.tool_annotations,
+        #
+        # 再摘掉进程内专用参数（seal-ledger-path-and-caller-isolation 2.1）：
+        # `db_path` 只服务仓内测试与嵌入式调用，不该出现在 MCP 参数面——
+        # 它一旦可被调用方指定，「按 caller 隔离」就退化成"请自觉遵守"。
+        app.tool(hide_params(map_errors(spec.fn), PROCESS_ONLY_PARAMS), name=spec.name,
+                 description=spec.doc, annotations=spec.tool_annotations,
                  output_schema=output_schema_for(spec.name))
+    # 兜底：schema 里没有不等于传了没用（实测 fastmcp 仍会透传），
+    # 所以进工具前把客户端硬塞的同名参数丢掉。
+    app.add_middleware(StripExtraArgs(PROCESS_ONLY_PARAMS))
 
     for uri, (title, text) in workflows.RESOURCES.items():
         # 每个 URI 一个闭包：直接捕获 text 会在循环结束后全部指向最后一份。

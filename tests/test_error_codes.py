@@ -158,21 +158,33 @@ def test_invalid_input_over_the_wire():
     assert r.structured_content["error"]["code"] == E.INVALID_INPUT
 
 
-def test_upstream_unavailable_over_the_wire():
-    r = _call("retrieve_decisions",
-              {"symbol": "X", "as_of": "2025-01-01",
-               "db_path": "/proc/no-such-dir/ledger.db"})
+def test_upstream_unavailable_over_the_wire(tmp_path, monkeypatch):
+    """账本不可用 → `upstream_unavailable`（可重试档），不是入参错。
+
+    触发方式自 2026-11-17 起改为**服务端派生路径不可写**：`db_path` 已不在 MCP
+    参数面（客户端传了会被丢弃），所以「调用方给个坏路径」这条路本身不存在了。
+    判据不变，变的只是怎么造出这个坏状态——把根目录设到「父级是普通文件」的
+    位置上，`mkdir(parents=True)` 会以 `NotADirectoryError`（OSError）失败。
+    """
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    monkeypatch.setenv("FD_QUANT_LEDGER_ROOT", str(blocker / "root"))
+
+    r = _call("retrieve_decisions", {"symbol": "X", "as_of": "2025-01-01"})
     assert r.is_error is True
     err = r.structured_content["error"]
     assert err["code"] == E.UPSTREAM_UNAVAILABLE
     assert err["upstream"] == "local_sqlite_ledger"
+    assert err["retryable"] is True
 
 
-def test_contract_violation_over_the_wire_carries_field():
-    db = str(Path(tempfile.mkdtemp()) / "l.db")
+def test_contract_violation_over_the_wire_carries_field(tmp_path, monkeypatch):
+    # `db_path` 已不在参数面；落点由根目录 + caller 派生（这里只关心契约错误，
+    # 落哪个库无所谓，但必须给一个能写的根，否则会先撞上路径错误）。
+    monkeypatch.setenv("FD_QUANT_LEDGER_ROOT", str(tmp_path))
     r = _call("record_decision", {
         "as_of": "2025-01-02", "symbol": "600519.SS", "pack": "p", "skill": "s",
-        "payload": {"schema_version": "1"}, "db_path": db})
+        "payload": {"schema_version": "1"}})
     assert r.is_error is True
     err = r.structured_content["error"]
     assert err["code"] == E.INVALID_INPUT

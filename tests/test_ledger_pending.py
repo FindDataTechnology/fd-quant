@@ -172,9 +172,17 @@ def test_retrieve_still_hides_future_settlements(store):
     assert store.list_pending(caller="c1", today="2026-07-20")["pagination"]["total"] == 0
 
 
-def test_tool_wrapper_returns_envelope_and_total(store, monkeypatch):
-    monkeypatch.setenv("FD_QUANT_LEDGER_DB", str(store.db_path))
-    monkeypatch.setenv("FD_QUANT_CALLER", "c1")   # 工具层用 resolve_caller()，与 store 层一致
+def test_tool_wrapper_returns_envelope_and_total(tmp_path, monkeypatch):
+    """工具层与 store 层读到同一份账本：靠**同一个 caller** 对齐，而不是靠同一路径。
+
+    分库后工具层不再接受 `db_path`，落点由根目录 + caller 派生。所以这条用例
+    改为让 store 也用同一个 caller 派生——两层仍是同一事实的两种入口。
+    """
+    from fd_quant.ledger.store import caller_db_path
+
+    monkeypatch.setenv("FD_QUANT_LEDGER_ROOT", str(tmp_path))
+    monkeypatch.setenv("FD_QUANT_CALLER", "c1")
+    store = LedgerStore(caller_db_path("c1"))
     _record(store, symbol="A1")
     out = lt.list_pending_decisions(as_of="2026-07-20")
     assert out["tool"] == "list_pending_decisions"

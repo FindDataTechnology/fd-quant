@@ -72,8 +72,11 @@ def _rating(as_of: str, subject: str) -> dict:
 @pytest.fixture(scope="module")
 def server(tmp_path_factory):
     port = 8231
-    db = tmp_path_factory.mktemp("wire") / "ledger.db"
-    env = dict(os.environ, FD_QUANT_LEDGER_DB=str(db))
+    root = tmp_path_factory.mktemp("wire")
+    env = dict(os.environ, FD_QUANT_LEDGER_ROOT=str(root))
+    # 分库后没有单一"库文件"可断言：每个 Bearer 各一个队列目录。
+    # 传根目录而不是文件，让两个断言（隔离 / 不落凭据）各自去列目录。
+    db = root
     proc = subprocess.Popen(
         [sys.executable, "-m", "fd_quant.server", "--http", str(port)],
         cwd=str(REPO), env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -122,9 +125,13 @@ def test_two_bearers_get_separate_ledgers_over_http(server):
 
     assert a.get("created") is True and b.get("created") is True, (a, b)
     assert a["decision_id"] != b["decision_id"]
-    # `counts` 是**全库**行数（跨调用者），不是某个调用者的行数——账本刻意如此：
-    # 行数快照要能回答"这次操作有没有让库里多一行"，若按调用者裁剪就失去了对照意义。
-    assert b["counts"]["decisions"] == 2, b["counts"]
+    # 分库后 `counts` 是**本调用者库**的行数，不是全平台行数——这正是隔离的判据：
+    # 若两人落进同一个库，b 会看到 2 行（说明身份没传到存储层）。
+    assert a["counts"]["decisions"] == 1, a["counts"]
+    assert b["counts"]["decisions"] == 1, b["counts"]
+    # 两个不同的分库目录真的被建出来了（存储层的隔离，不只是查询时的 WHERE）。
+    dirs = [d for d in db.iterdir() if d.is_dir()]
+    assert len(dirs) == 2, f"两个 Bearer 应得两个分库目录，实得 {[d.name for d in dirs]}"
 
     # 同一 Bearer 重复提交仍被拒——隔离不能把幂等键放掉
     _, ra2 = _rpc(port, sid_a, "token-AAA", "tools/call",
@@ -148,14 +155,19 @@ def test_bearer_plaintext_never_reaches_the_database(server):
                 {"name": "record_decision", "arguments": args})
     assert _result(r).get("created") is True, r
 
-    raw = db.read_bytes()
-    assert b"secret-token-ZZZ" not in raw, "Bearer 原文落进了账本文件"
+    files = list(db.rglob("*.db"))
+    assert files, "分库后应至少有一个库文件"
+    for f in files:
+        assert b"secret-token-ZZZ" not in f.read_bytes(), f"Bearer 原文落进了 {f}"
 
     import sqlite3
 
-    con = sqlite3.connect(db)
-    callers = {row[0] for row in con.execute("SELECT caller FROM decisions")}
-    con.close()
+    # 分库后要逐库读行内的 caller（`db` 是根目录，不是库文件）。
+    callers = set()
+    for f in files:
+        con = sqlite3.connect(f)
+        callers |= {row[0] for row in con.execute("SELECT caller FROM decisions")}
+        con.close()
     assert "secret-token-ZZZ" not in callers
     # 指纹：SHA-256 前 12 位十六进制，长度固定、可复核
     import hashlib
